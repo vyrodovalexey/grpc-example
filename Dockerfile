@@ -40,7 +40,7 @@ FROM gcr.io/distroless/static-debian12:nonroot
 LABEL org.opencontainers.image.title="gRPC Test Server" \
       org.opencontainers.image.description="A gRPC test server for testing and development" \
       org.opencontainers.image.vendor="alexey" \
-      org.opencontainers.image.source="https://github.com/alexey/grpc-example" \
+      org.opencontainers.image.source="https://github.com/vyrodovalexey/grpc-example" \
       org.opencontainers.image.licenses="MIT"
 
 # Copy binary from builder

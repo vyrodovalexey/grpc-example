@@ -8,10 +8,10 @@ import (
 
 	"go.uber.org/zap"
 
-	"github.com/alexey/grpc-example/internal/config"
-	"github.com/alexey/grpc-example/internal/logger"
-	"github.com/alexey/grpc-example/internal/server"
-	"github.com/alexey/grpc-example/internal/service"
+	"github.com/vyrodovalexey/grpc-example/internal/config"
+	"github.com/vyrodovalexey/grpc-example/internal/logger"
+	"github.com/vyrodovalexey/grpc-example/internal/server"
+	"github.com/vyrodovalexey/grpc-example/internal/service"
 )
 
 func main() {

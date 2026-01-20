@@ -1,6 +1,6 @@
 # gRPC Test Server
 
-[![CI](https://github.com/alexey/grpc-example/actions/workflows/pr.yml/badge.svg)](https://github.com/alexey/grpc-example/actions/workflows/pr.yml)
+[![CI](https://github.com/vyrodovalexey/grpc-example/actions/workflows/pr.yml/badge.svg)](https://github.com/vyrodovalexey/grpc-example/actions/workflows/pr.yml)
 [![Coverage](https://codecov.io/gh/alexey/grpc-example/branch/main/graph/badge.svg)](https://codecov.io/gh/alexey/grpc-example)
 [![Go Version](https://img.shields.io/badge/go-1.24-blue.svg)](https://golang.org/dl/)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
@@ -68,7 +68,7 @@ go install golang.org/x/tools/cmd/goimports@latest
 ### 1. Clone the Repository
 
 ```bash
-git clone https://github.com/alexey/grpc-example.git
+git clone https://github.com/vyrodovalexey/grpc-example.git
 cd grpc-example
 ```
 
@@ -481,7 +481,7 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 If you encounter any issues or have questions:
 
-1. Check the [Issues](https://github.com/alexey/grpc-example/issues) page
+1. Check the [Issues](https://github.com/vyrodovalexey/grpc-example/issues) page
 2. Create a new issue with detailed information
 3. Include logs, configuration, and steps to reproduce
 

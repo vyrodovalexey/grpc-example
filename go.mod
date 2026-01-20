@@ -1,4 +1,4 @@
-module github.com/alexey/grpc-example
+module github.com/vyrodovalexey/grpc-example
 
 go 1.24.0
 

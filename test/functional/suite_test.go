@@ -15,7 +15,7 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 
-	apiv1 "github.com/alexey/grpc-example/pkg/api/v1"
+	apiv1 "github.com/vyrodovalexey/grpc-example/pkg/api/v1"
 )
 
 const (

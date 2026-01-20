@@ -14,7 +14,7 @@ import (
 	healthpb "google.golang.org/grpc/health/grpc_health_v1"
 	"google.golang.org/grpc/reflection"
 
-	apiv1 "github.com/alexey/grpc-example/pkg/api/v1"
+	apiv1 "github.com/vyrodovalexey/grpc-example/pkg/api/v1"
 )
 
 // Server represents the gRPC server with lifecycle management.

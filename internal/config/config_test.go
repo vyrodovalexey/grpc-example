@@ -7,9 +7,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/alexey/grpc-example/internal/config"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/vyrodovalexey/grpc-example/internal/config"
 )
 
 // clearEnvVars clears all config-related environment variables.

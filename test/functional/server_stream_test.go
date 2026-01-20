@@ -13,7 +13,7 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
-	apiv1 "github.com/alexey/grpc-example/pkg/api/v1"
+	apiv1 "github.com/vyrodovalexey/grpc-example/pkg/api/v1"
 )
 
 func TestFunctional_ServerStream_FiveValues(t *testing.T) {

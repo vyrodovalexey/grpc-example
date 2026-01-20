@@ -12,8 +12,8 @@ import (
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
 
-	"github.com/alexey/grpc-example/internal/server"
-	apiv1 "github.com/alexey/grpc-example/pkg/api/v1"
+	"github.com/vyrodovalexey/grpc-example/internal/server"
+	apiv1 "github.com/vyrodovalexey/grpc-example/pkg/api/v1"
 )
 
 // mockTestService implements apiv1.TestServiceServer for testing.

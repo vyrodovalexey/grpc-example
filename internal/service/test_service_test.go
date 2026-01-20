@@ -14,8 +14,8 @@ import (
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 
-	"github.com/alexey/grpc-example/internal/service"
-	apiv1 "github.com/alexey/grpc-example/pkg/api/v1"
+	"github.com/vyrodovalexey/grpc-example/internal/service"
+	apiv1 "github.com/vyrodovalexey/grpc-example/pkg/api/v1"
 )
 
 // mockServerStream implements grpc.ServerStreamingServer[StreamResponse] for testing.

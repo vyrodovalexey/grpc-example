@@ -178,7 +178,7 @@ jobs:
             -Dsonar.sources=.
             -Dsonar.exclusions=**/*_test.go,**/vendor/**,**/test/**
             -Dsonar.tests=.
-            -Dsonar.test.inclusions=**/*_test.go,**/test/**
+            -Dsonar.test.inclusions=**/*_test.go,**/test/**,**/pkg/**
 
   build:
     name: Build

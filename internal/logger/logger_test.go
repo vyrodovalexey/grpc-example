@@ -13,9 +13,9 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/alexey/grpc-example/internal/logger"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/vyrodovalexey/grpc-example/internal/logger"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
 )
