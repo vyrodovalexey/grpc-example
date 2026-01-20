@@ -378,7 +378,7 @@ const file_api_proto_v1_test_proto_rawDesc = "" +
 	"\vTestService\x124\n" +
 	"\x05Unary\x12\x14.api.v1.UnaryRequest\x1a\x15.api.v1.UnaryResponse\x12?\n" +
 	"\fServerStream\x12\x15.api.v1.StreamRequest\x1a\x16.api.v1.StreamResponse0\x01\x12V\n" +
-	"\x13BidirectionalStream\x12\x1c.api.v1.BidirectionalRequest\x1a\x1d.api.v1.BidirectionalResponse(\x010\x01B1Z/github.com/vyrodovalexey/grpc-example/pkg/api/v1;apiv1b\x06proto3"
+	"\x13BidirectionalStream\x12\x1c.api.v1.BidirectionalRequest\x1a\x1d.api.v1.BidirectionalResponse(\x010\x01B8Z6github.com/vyrodovalexey/grpc-example/pkg/api/v1;apiv1b\x06proto3"
 
 var (
 	file_api_proto_v1_test_proto_rawDescOnce sync.Once
