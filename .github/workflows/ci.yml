@@ -247,7 +247,7 @@ jobs:
           cache-to: type=gha,mode=max
 
   # ================================
-  # Sequential Stage: Build & Release
+  # Tag-only Jobs: Build & Release
   # ================================
 
   build-release:
