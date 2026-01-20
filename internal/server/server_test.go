@@ -463,3 +463,130 @@ func TestServer_ContextCancelledBeforeStart(t *testing.T) {
 		t.Fatal("server did not complete in time with cancelled context")
 	}
 }
+
+// TestServer_ServerErrorDuringOperation tests the scenario where the gRPC server
+// encounters an error or stops during operation, triggering the errCh path in Start().
+// This covers the select case at lines 84-89 in server.go where the server receives
+// from errCh when grpcServer.Serve() returns.
+func TestServer_ServerErrorDuringOperation(t *testing.T) {
+	tests := []struct {
+		name        string
+		stopMethod  string // "stop" for immediate stop, "graceful" for graceful stop via context
+		expectError bool
+	}{
+		{
+			name:        "server stops via Stop() method - errCh path with nil error",
+			stopMethod:  "stop",
+			expectError: false,
+		},
+		{
+			name:        "server stops via context cancellation - graceful shutdown path",
+			stopMethod:  "graceful",
+			expectError: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Arrange
+			port := getAvailablePortInt(t)
+			cfg := server.Config{
+				Address:         formatPort(port),
+				ShutdownTimeout: 5 * time.Second,
+			}
+			testService := &mockTestService{}
+			logger := newTestLogger()
+
+			srv := server.NewServer(cfg, testService, logger)
+			require.NotNil(t, srv)
+
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+
+			// Start server in goroutine
+			errCh := make(chan error, 1)
+			go func() {
+				errCh <- srv.Start(ctx)
+			}()
+
+			// Wait for server to start and verify it's listening
+			time.Sleep(100 * time.Millisecond)
+			conn, err := net.DialTimeout("tcp", formatPort(port), time.Second)
+			require.NoError(t, err)
+			require.NoError(t, conn.Close())
+
+			// Act - trigger the appropriate stop method
+			switch tt.stopMethod {
+			case "stop":
+				// This triggers the errCh path: grpcServer.Serve() returns
+				// when Stop() is called, sending nil to errCh (since Stop()
+				// causes Serve() to return without error)
+				srv.Stop()
+			case "graceful":
+				// This triggers the ctx.Done() path
+				cancel()
+			}
+
+			// Assert - verify server completes with expected result
+			select {
+			case err := <-errCh:
+				if tt.expectError {
+					assert.Error(t, err)
+				} else {
+					assert.NoError(t, err)
+				}
+			case <-time.After(10 * time.Second):
+				t.Fatal("server did not stop in time")
+			}
+		})
+	}
+}
+
+// TestServer_StopTriggersErrChPath specifically tests that calling Stop() causes
+// the server to exit through the errCh path (not the ctx.Done() path).
+// When Stop() is called, grpcServer.Serve() returns, which sends to errCh.
+func TestServer_StopTriggersErrChPath(t *testing.T) {
+	// Arrange
+	port := getAvailablePortInt(t)
+	cfg := server.Config{
+		Address:         formatPort(port),
+		ShutdownTimeout: 5 * time.Second,
+	}
+	testService := &mockTestService{}
+	logger := newTestLogger()
+
+	srv := server.NewServer(cfg, testService, logger)
+	require.NotNil(t, srv)
+
+	// Use a context that we will NOT cancel - this ensures we're testing
+	// the errCh path, not the ctx.Done() path
+	ctx := context.Background()
+
+	// Start server in goroutine
+	resultCh := make(chan error, 1)
+	go func() {
+		resultCh <- srv.Start(ctx)
+	}()
+
+	// Wait for server to start
+	time.Sleep(100 * time.Millisecond)
+
+	// Verify server is running
+	conn, err := net.DialTimeout("tcp", formatPort(port), time.Second)
+	require.NoError(t, err)
+	require.NoError(t, conn.Close())
+
+	// Act - call Stop() which causes grpcServer.Serve() to return
+	// This triggers the errCh path in the select statement
+	srv.Stop()
+
+	// Assert - server should return nil (no error) through errCh path
+	select {
+	case err := <-resultCh:
+		// When Stop() is called, Serve() returns without error,
+		// so errCh receives nil, and Start() returns nil
+		assert.NoError(t, err, "Stop() should cause server to exit cleanly through errCh path")
+	case <-time.After(5 * time.Second):
+		t.Fatal("server did not stop in time")
+	}
+}
