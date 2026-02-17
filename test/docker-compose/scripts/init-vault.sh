@@ -20,7 +20,7 @@ SERVER_CN="${SERVER_CN:-grpc-server}"
 CLIENT_CN="${CLIENT_CN:-grpc-client}"
 SERVER_ALT_NAMES="${SERVER_ALT_NAMES:-grpc-server,localhost}"
 SERVER_IP_SANS="${SERVER_IP_SANS:-127.0.0.1}"
-CERTS_DIR="/certs"
+CERTS_DIR="${CERTS_DIR:-/certs}"
 
 export VAULT_ADDR VAULT_TOKEN
 
