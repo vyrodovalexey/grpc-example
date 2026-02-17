@@ -20,8 +20,8 @@ env:
   HELM_VERSION: 'v3.17.0'
   DOCKER_REGISTRY: ghcr.io
   DOCKER_IMAGE: ghcr.io/${{ github.repository }}
-  HELM_CHART_PATH: 'helm/grpc-example'
-  HELM_RELEASE_NAME: 'grpc-example'
+  HELM_CHART_PATH: 'helm/grpc-server'
+  HELM_RELEASE_NAME: 'grpc-server'
   HELM_NAMESPACE: 'grpc-example-test'
 
 jobs:
@@ -155,7 +155,6 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
-
       - name: Set up Helm
         uses: azure/setup-helm@fe7b79cd5ee1e45176fcad797de68ecaf3ca4814 # v4
         with:
@@ -170,7 +169,7 @@ jobs:
       - name: Helm lint
         run: |
           echo "==> Linting Helm chart..."
-          helm lint helm/grpc-server
+          helm lint ${{ env.HELM_CHART_PATH}}
 
       - name: Create test namespace
         run: |
@@ -179,12 +178,12 @@ jobs:
       - name: Helm template validation
         run: |
           echo "==> Validating Helm templates..."
-          helm template ${{ env.HELM_RELEASE_NAME }} ${{ env.HELM_CHART_PATH}}> /dev/null
+          helm template ${{ env.HELM_RELEASE_NAME }} ${{ env.HELM_CHART_PATH }} > /dev/null
           echo "Template validation successful!"
 
       - name: Template Helm chart (TLS enabled)
         run: |
-          helm template ${{ env.HELM_RELEASE_NAME }} ${{ env.HELM_CHART_PATH}} \
+          helm template ${{ env.HELM_RELEASE_NAME }} ${{ env.HELM_CHART_PATH }} \
             --set tls.enabled=true \
             --set tls.mode=mtls \
             --set tls.existingSecret=my-tls-secret
@@ -197,7 +196,6 @@ jobs:
             --set vault.enabled=true \
             --set vault.addr=https://vault.example.com:8200 \
             --set vault.tokenSecretName=vault-token
-
 
 
       - name: Template Helm chart (OIDC enabled)
@@ -780,12 +778,12 @@ jobs:
       - name: Build Docker image for testing
         run: |
           echo "==> Building Docker image for Helm install test..."
-          docker build -f Dockerfile -t grpc-example:helm-test .
+          docker build -f Dockerfile -t grpc-server:helm-test .
 
       - name: Load image into kind cluster
         run: |
           echo "==> Loading Docker image into kind cluster..."
-          kind load docker-image grpc-example:helm-test --name helm-install-test
+          kind load docker-image grpc-server:helm-test --name helm-install-test
 
       - name: Create test namespace
         run: |
@@ -796,7 +794,7 @@ jobs:
           echo "==> Installing Helm chart..."
           helm install ${{ env.HELM_RELEASE_NAME }} ${{ env.HELM_CHART_PATH}} \
             --namespace  ${{ env.HELM_NAMESPACE }} \
-            --set image.repository=grpc-example \
+            --set image.repository=grpc-server \
             --set image.tag=helm-test \
             --set image.pullPolicy=Never \
             --wait \
@@ -808,4 +806,4 @@ jobs:
             --namespace ${{ env.HELM_NAMESPACE }} \
             --timeout=3m
           echo "Deployment successful!"
-          kubectl get pods -n ${{ env.HELM_NAMESPACE }} -l app.kubernetes.io/name=grpc-example
+          kubectl get pods -n ${{ env.HELM_NAMESPACE }} -l app.kubernetes.io/name=grpc-server
