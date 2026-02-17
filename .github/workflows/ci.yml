@@ -20,6 +20,9 @@ env:
   HELM_VERSION: 'v3.17.0'
   DOCKER_REGISTRY: ghcr.io
   DOCKER_IMAGE: ghcr.io/${{ github.repository }}
+  HELM_CHART_PATH: 'helm/grpc-example'
+  HELM_RELEASE_NAME: 'grpc-example'
+  HELM_NAMESPACE: 'grpc-example-test'
 
 jobs:
   # ===========================================================================
@@ -742,58 +745,63 @@ jobs:
           retention-days: 30
 
   # ===========================================================================
-  # Tag-only Jobs: Helm Package & Release
+  # Helm Deploy (Tag only)
   # ===========================================================================
 
-  helm-package:
-    name: Helm Package & Release
+  helm-deploy:
+    name: Helm Deploy
     runs-on: ubuntu-latest
-    needs: [sonarcloud]
+    needs: [ trivy-scan ]
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
-    timeout-minutes: 10
     permissions:
-      contents: write
+      contents: read
     steps:
       - name: Checkout code
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
       - name: Set up Helm
-        uses: azure/setup-helm@v4
+        uses: azure/setup-helm@fe7b79cd5ee1e45176fcad797de68ecaf3ca4814 # v4
         with:
-          version: ${{ env.HELM_VERSION }}
+          version: 'v3.14.0'
 
-      - name: Get version from tag
-        id: version
-        run: |
-          VERSION=${GITHUB_REF#refs/tags/v}
-          echo "version=${VERSION}" >> $GITHUB_OUTPUT
-          echo "Chart version: ${VERSION}"
-
-      - name: Update Chart.yaml version
-        run: |
-          sed -i "s/^version:.*/version: ${{ steps.version.outputs.version }}/" helm/grpc-server/Chart.yaml
-          sed -i "s/^appVersion:.*/appVersion: \"${{ steps.version.outputs.version }}\"/" helm/grpc-server/Chart.yaml
-          cat helm/grpc-server/Chart.yaml
-
-      - name: Lint Helm chart
-        run: helm lint helm/grpc-server
-
-      - name: Package Helm chart
-        run: |
-          mkdir -p bin
-          helm package helm/grpc-server -d bin
-          ls -la bin/
-
-      - name: Upload Helm chart to GitHub Release
-        uses: softprops/action-gh-release@v2
+      - name: Create kind cluster
+        uses: helm/kind-action@92086f6be054225fa813e0a4b13787fc9088faab # v1.13.0
         with:
-          files: bin/grpc-server-*.tgz
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          cluster_name: helm-install-test
+          wait: 120s
 
-      - name: Upload Helm chart artifact
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        with:
-          name: helm-chart
-          path: bin/grpc-server-*.tgz
-          retention-days: 30
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+
+      - name: Build Docker image for testing
+        run: |
+          echo "==> Building Docker image for Helm install test..."
+          docker build -f Dockerfile -t grpc-example:helm-test .
+
+      - name: Load image into kind cluster
+        run: |
+          echo "==> Loading Docker image into kind cluster..."
+          kind load docker-image grpc-example:helm-test --name helm-install-test
+
+      - name: Create test namespace
+        run: |
+          kubectl create namespace ${{ env.HELM_NAMESPACE }} 
+
+      - name: Helm install
+        run: |
+          echo "==> Installing Helm chart..."
+          helm install ${{ env.HELM_RELEASE_NAME }} ${{ env.HELM_CHART_PATH}} \
+            --namespace  ${{ env.HELM_NAMESPACE }} \
+            --set image.repository=grpc-example \
+            --set image.tag=helm-test \
+            --set image.pullPolicy=Never \
+            --wait \
+            --timeout 5m
+
+      - name: Verify deployment
+        run: |
+          kubectl rollout status deployment/${{ env.HELM_RELEASE_NAME }} \
+            --namespace ${{ env.HELM_NAMESPACE }} \
+            --timeout=3m
+          echo "Deployment successful!"
+          kubectl get pods -n ${{ env.HELM_NAMESPACE }} -l app.kubernetes.io/name=grpc-example
