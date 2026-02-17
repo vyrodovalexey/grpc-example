@@ -172,22 +172,26 @@ jobs:
           echo "==> Linting Helm chart..."
           helm lint helm/grpc-server
 
+      - name: Create test namespace
+        run: |
+          kubectl create namespace ${{ env.HELM_NAMESPACE }} 
+
       - name: Helm template validation
         run: |
           echo "==> Validating Helm templates..."
-          helm template grpc-server helm/grpc-server > /dev/null
+          helm template ${{ env.HELM_RELEASE_NAME }} ${{ env.HELM_CHART_PATH}}> /dev/null
           echo "Template validation successful!"
 
       - name: Template Helm chart (TLS enabled)
         run: |
-          helm template grpc-server helm/grpc-server \
+          helm template ${{ env.HELM_RELEASE_NAME }} ${{ env.HELM_CHART_PATH}} \
             --set tls.enabled=true \
             --set tls.mode=mtls \
             --set tls.existingSecret=my-tls-secret
 
       - name: Template Helm chart (Vault enabled)
         run: |
-          helm template grpc-server helm/grpc-server \
+          helm template ${{ env.HELM_RELEASE_NAME }} ${{ env.HELM_CHART_PATH}} \
             --set tls.enabled=true \
             --set tls.mode=mtls \
             --set vault.enabled=true \
@@ -198,7 +202,7 @@ jobs:
 
       - name: Template Helm chart (OIDC enabled)
         run: |
-          helm template grpc-server helm/grpc-server \
+          helm template ${{ env.HELM_RELEASE_NAME }} ${{ env.HELM_CHART_PATH}} \
             --set auth.mode=oidc \
             --set oidc.enabled=true \
             --set oidc.issuerURL=https://keycloak.example.com/realms/test \
@@ -207,14 +211,14 @@ jobs:
 
       - name: Template Helm chart (OpenTelemetry enabled)
         run: |
-          helm template grpc-server helm/grpc-server \
+          helm template ${{ env.HELM_RELEASE_NAME }} ${{ env.HELM_CHART_PATH}} \
             --set otel.enabled=true \
             --set otel.endpoint=http://otel-collector:4317 \
             --set otel.serviceName=grpc-server
 
       - name: Template Helm chart (all features enabled)
         run: |
-          helm template grpc-server helm/grpc-server \
+          helm template ${{ env.HELM_RELEASE_NAME }} ${{ env.HELM_CHART_PATH}} \
             --set tls.enabled=true \
             --set tls.mode=mtls \
             --set vault.enabled=true \
@@ -233,7 +237,7 @@ jobs:
 
       - name: Template Helm chart (production config)
         run: |
-          helm template grpc-server helm/grpc-server \
+          helm template ${{ env.HELM_RELEASE_NAME }} ${{ env.HELM_CHART_PATH}} \
             --set replicaCount=3 \
             --set autoscaling.enabled=true \
             --set autoscaling.minReplicas=3 \
@@ -246,7 +250,7 @@ jobs:
       - name: Helm dry-run install
         run: |
           echo "==> Running Helm dry-run install..."
-          helm install --dry-run --debug grpc-server helm/grpc-server
+          helm install --dry-run --debug ${{ env.HELM_RELEASE_NAME }} ${{ env.HELM_CHART_PATH}}
 
  
 
