@@ -15,8 +15,8 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  GO_VERSION: '1.25.5'
-  GOLANGCI_LINT_VERSION: 'v2.7.2'
+  GO_VERSION: '1.25.7'
+  GOLANGCI_LINT_VERSION: 'v2.8.0'
   DOCKER_REGISTRY: ghcr.io
   DOCKER_IMAGE: ghcr.io/${{ github.repository }}
 
@@ -140,13 +140,132 @@ jobs:
           retention-days: 7
 
   # ===========================================================================
+  # Integration Tests (requires Docker Compose services)
+  # ===========================================================================
+
+  integration-tests:
+    name: Integration Tests
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      - name: Start test environment
+        run: |
+          docker compose -f test/docker-compose/docker-compose.yml --env-file test/docker-compose/.env.test up -d vault keycloak keycloakdb
+          # Wait for services to be healthy
+          echo "Waiting for Vault..."
+          timeout 60 bash -c 'until curl -s http://localhost:8200/v1/sys/health | grep -q "initialized"; do sleep 2; done'
+          echo "Waiting for Keycloak..."
+          timeout 180 bash -c 'until curl -s http://localhost:8091/health/ready | grep -q "UP"; do sleep 3; done'
+
+      - name: Initialize Vault PKI
+        run: |
+          docker compose -f test/docker-compose/docker-compose.yml --env-file test/docker-compose/.env.test up vault-init
+
+      - name: Initialize Keycloak
+        run: |
+          docker compose -f test/docker-compose/docker-compose.yml --env-file test/docker-compose/.env.test up keycloak-init
+
+      - name: Run integration tests
+        run: |
+          go test -v -race -tags=integration -timeout=5m ./test/integration/...
+        env:
+          VAULT_ADDR: http://localhost:8200
+          VAULT_TOKEN: myroot
+          KEYCLOAK_URL: http://localhost:8090
+          KEYCLOAK_REALM: grpc-test
+          KEYCLOAK_CLIENT_ID: grpc-server
+          KEYCLOAK_CLIENT_SECRET: grpc-server-secret
+
+      - name: Stop test environment
+        if: always()
+        run: |
+          docker compose -f test/docker-compose/docker-compose.yml --env-file test/docker-compose/.env.test down -v
+
+  # ===========================================================================
+  # E2E Tests (full system test)
+  # ===========================================================================
+
+  e2e-tests:
+    name: E2E Tests
+    runs-on: ubuntu-latest
+    needs: [integration-tests]
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      - name: Build gRPC server image
+        run: |
+          docker build -t grpc-server:test .
+
+      - name: Start full test environment
+        run: |
+          docker compose -f test/docker-compose/docker-compose.yml --env-file test/docker-compose/.env.test up -d
+          # Wait for all services
+          echo "Waiting for Vault..."
+          timeout 60 bash -c 'until curl -s http://localhost:8200/v1/sys/health | grep -q "initialized"; do sleep 2; done'
+          echo "Waiting for Keycloak..."
+          timeout 180 bash -c 'until curl -s http://localhost:8091/health/ready | grep -q "UP"; do sleep 3; done'
+          # Run init containers
+          docker compose -f test/docker-compose/docker-compose.yml --env-file test/docker-compose/.env.test up vault-init
+          docker compose -f test/docker-compose/docker-compose.yml --env-file test/docker-compose/.env.test up keycloak-init
+
+      - name: Run E2E tests
+        run: |
+          go test -v -race -tags=e2e -timeout=10m ./test/e2e/...
+        env:
+          VAULT_ADDR: http://localhost:8200
+          VAULT_TOKEN: myroot
+          KEYCLOAK_URL: http://localhost:8090
+          KEYCLOAK_REALM: grpc-test
+          KEYCLOAK_CLIENT_ID: grpc-server
+          KEYCLOAK_CLIENT_SECRET: grpc-server-secret
+          GRPC_SERVER_ADDR: localhost:50051
+          CERTS_DIR: ./test/docker-compose/certs
+
+      - name: Collect logs on failure
+        if: failure()
+        run: |
+          docker compose -f test/docker-compose/docker-compose.yml --env-file test/docker-compose/.env.test logs > docker-compose-logs.txt
+          
+      - name: Upload logs artifact
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-logs
+          path: docker-compose-logs.txt
+          retention-days: 7
+
+      - name: Stop test environment
+        if: always()
+        run: |
+          docker compose -f test/docker-compose/docker-compose.yml --env-file test/docker-compose/.env.test down -v
+
+  # ===========================================================================
   # Sequential Jobs: SonarCloud, Build, Docker
   # ===========================================================================
 
   sonarcloud:
     name: SonarCloud Analysis
     runs-on: ubuntu-latest
-    needs: [lint, govulncheck, unit-tests, functional-tests]
+    needs: [lint, govulncheck, unit-tests, functional-tests, integration-tests, e2e-tests]
     permissions:
       contents: read
     steps:

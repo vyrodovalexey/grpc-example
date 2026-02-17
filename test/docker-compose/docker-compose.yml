@@ -1,0 +1,205 @@
+# Docker Compose test environment for mTLS and OIDC authentication testing.
+# Provides Vault (PKI), Keycloak (OIDC), PostgreSQL, and the gRPC server under test.
+
+services:
+  # ---------------------------------------------------------------------------
+  # Vault – PKI secrets engine for mTLS certificate management
+  # ---------------------------------------------------------------------------
+  vault:
+    image: hashicorp/vault:1.17
+    container_name: grpc-test-vault
+    environment:
+      VAULT_DEV_ROOT_TOKEN_ID: ${VAULT_DEV_ROOT_TOKEN_ID:-myroot}
+      VAULT_DEV_LISTEN_ADDRESS: "0.0.0.0:8200"
+      VAULT_ADDR: "http://127.0.0.1:8200"
+      VAULT_LOG_LEVEL: ${VAULT_LOG_LEVEL:-info}
+    cap_add:
+      - IPC_LOCK
+    ports:
+      - "${VAULT_HOST_PORT:-8200}:8200"
+    volumes:
+      - vault_data:/vault/file
+      - ./config/vault-config.hcl:/vault/config/local.hcl:ro
+      - ./scripts:/scripts:ro
+      - certs:/certs
+    healthcheck:
+      test: ["CMD", "vault", "status"]
+      interval: 5s
+      timeout: 3s
+      retries: 15
+      start_period: 5s
+    networks:
+      - grpc-test
+
+  # ---------------------------------------------------------------------------
+  # PostgreSQL – Keycloak backing database
+  # ---------------------------------------------------------------------------
+  keycloakdb:
+    image: postgres:16-alpine
+    container_name: grpc-test-keycloakdb
+    environment:
+      POSTGRES_DB: ${KC_DB_NAME:-keycloak}
+      POSTGRES_USER: ${KC_DB_USER:-keycloak}
+      POSTGRES_PASSWORD: ${KC_DB_PASSWORD:-password}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${KC_DB_USER:-keycloak} -d ${KC_DB_NAME:-keycloak}"]
+      interval: 5s
+      timeout: 3s
+      retries: 15
+      start_period: 5s
+    networks:
+      - grpc-test
+
+  # ---------------------------------------------------------------------------
+  # Keycloak – OIDC identity provider
+  # ---------------------------------------------------------------------------
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.5
+    container_name: grpc-test-keycloak
+    environment:
+      KC_DB: postgres
+      KC_DB_URL: "jdbc:postgresql://keycloakdb:5432/${KC_DB_NAME:-keycloak}"
+      KC_DB_USERNAME: ${KC_DB_USER:-keycloak}
+      KC_DB_PASSWORD: ${KC_DB_PASSWORD:-password}
+      KC_HTTP_PORT: 8090
+      KC_HOSTNAME_STRICT: "false"
+      KC_HOSTNAME_STRICT_HTTPS: "false"
+      KC_HTTP_ENABLED: "true"
+      KC_FEATURES: token-exchange,admin-fine-grained-authz
+      KC_SPI_REALM_DEFAULT_SSL_REQUIRED: none
+      KC_LOG_LEVEL: ${KC_LOG_LEVEL:-info}
+      KC_METRICS_ENABLED: "true"
+      KC_HEALTH_ENABLED: "true"
+      KEYCLOAK_ADMIN: ${KC_ADMIN_USER:-admin}
+      KEYCLOAK_ADMIN_PASSWORD: ${KC_ADMIN_PASSWORD:-admin}
+    command: start-dev --import-realm
+    depends_on:
+      keycloakdb:
+        condition: service_healthy
+    ports:
+      - "${KC_HOST_PORT:-8090}:8090"
+      - "${KC_HEALTH_HOST_PORT:-8091}:9000"
+    volumes:
+      - ./config/keycloak-realm.json:/opt/keycloak/data/import/grpc-test-realm.json:ro
+    healthcheck:
+      test: ["CMD-SHELL", "exec 3<>/dev/tcp/127.0.0.1/9000 && echo -e 'GET /health/ready HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n' >&3 && cat <&3 | grep -q '\"status\": \"UP\"'"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 30s
+    networks:
+      - grpc-test
+
+  # ---------------------------------------------------------------------------
+  # vault-init – Initialise Vault PKI and generate certificates
+  # ---------------------------------------------------------------------------
+  vault-init:
+    image: hashicorp/vault:1.17
+    container_name: grpc-test-vault-init
+    entrypoint: /bin/sh
+    command: ["/scripts/init-vault.sh"]
+    environment:
+      VAULT_ADDR: "http://vault:8200"
+      VAULT_TOKEN: ${VAULT_DEV_ROOT_TOKEN_ID:-myroot}
+      VAULT_PKI_PATH: ${VAULT_PKI_PATH:-pki}
+      VAULT_PKI_ROLE: ${VAULT_PKI_ROLE:-grpc-server}
+      CERT_TTL: ${CERT_TTL:-8760h}
+      SERVER_CN: ${SERVER_CN:-grpc-server}
+      CLIENT_CN: ${CLIENT_CN:-grpc-client}
+      SERVER_ALT_NAMES: ${SERVER_ALT_NAMES:-grpc-server,localhost}
+      SERVER_IP_SANS: ${SERVER_IP_SANS:-127.0.0.1}
+    depends_on:
+      vault:
+        condition: service_healthy
+    volumes:
+      - ./scripts:/scripts:ro
+      - certs:/certs
+    networks:
+      - grpc-test
+
+  # ---------------------------------------------------------------------------
+  # keycloak-init – Create realm, client, users and roles
+  # ---------------------------------------------------------------------------
+  keycloak-init:
+    image: hashicorp/vault:1.17
+    container_name: grpc-test-keycloak-init
+    entrypoint: /bin/sh
+    command: ["/scripts/init-keycloak.sh"]
+    environment:
+      KEYCLOAK_URL: "http://keycloak:8090"
+      KEYCLOAK_ADMIN: ${KC_ADMIN_USER:-admin}
+      KEYCLOAK_ADMIN_PASSWORD: ${KC_ADMIN_PASSWORD:-admin}
+      REALM_NAME: ${KC_REALM:-grpc-test}
+      CLIENT_ID: ${KC_CLIENT_ID:-grpc-server}
+      CLIENT_SECRET: ${KC_CLIENT_SECRET:-grpc-server-secret}
+    depends_on:
+      keycloak:
+        condition: service_healthy
+    volumes:
+      - ./scripts:/scripts:ro
+    networks:
+      - grpc-test
+
+  # ---------------------------------------------------------------------------
+  # grpc-server – Application under test
+  # ---------------------------------------------------------------------------
+  grpc-server:
+    build:
+      context: ../../
+      dockerfile: Dockerfile
+    container_name: grpc-test-server
+    environment:
+      GRPC_PORT: ${GRPC_PORT:-50051}
+      METRICS_PORT: ${METRICS_PORT:-9090}
+      LOG_LEVEL: ${LOG_LEVEL:-debug}
+      SHUTDOWN_TIMEOUT: ${SHUTDOWN_TIMEOUT:-30s}
+      # TLS / mTLS configuration
+      TLS_ENABLED: ${TLS_ENABLED:-true}
+      TLS_MODE: ${TLS_MODE:-mtls}
+      TLS_CERT_PATH: /certs/server-cert.pem
+      TLS_KEY_PATH: /certs/server-key.pem
+      TLS_CA_PATH: /certs/ca-cert.pem
+      TLS_CLIENT_AUTH: ${TLS_CLIENT_AUTH:-require}
+      # Vault PKI (disabled by default – use file certs from vault-init)
+      VAULT_ENABLED: ${VAULT_ENABLED:-false}
+      VAULT_ADDR: "http://vault:8200"
+      VAULT_TOKEN: ${VAULT_DEV_ROOT_TOKEN_ID:-myroot}
+      VAULT_PKI_PATH: ${VAULT_PKI_PATH:-pki}
+      VAULT_PKI_ROLE: ${VAULT_PKI_ROLE:-grpc-server}
+      # OIDC configuration
+      AUTH_MODE: ${AUTH_MODE:-mtls}
+      OIDC_ENABLED: ${OIDC_ENABLED:-false}
+      OIDC_ISSUER_URL: "http://keycloak:8090/realms/${KC_REALM:-grpc-test}"
+      OIDC_CLIENT_ID: ${KC_CLIENT_ID:-grpc-server}
+      OIDC_CLIENT_SECRET: ${KC_CLIENT_SECRET:-grpc-server-secret}
+      OIDC_AUDIENCE: ${OIDC_AUDIENCE:-grpc-server}
+    ports:
+      - "${GRPC_HOST_PORT:-50051}:50051"
+      - "${METRICS_HOST_PORT:-9090}:9090"
+    depends_on:
+      vault-init:
+        condition: service_completed_successfully
+    volumes:
+      - certs:/certs:ro
+    networks:
+      - grpc-test
+
+# =============================================================================
+# Volumes
+# =============================================================================
+volumes:
+  postgres_data:
+    driver: local
+  vault_data:
+    driver: local
+  certs:
+    driver: local
+
+# =============================================================================
+# Networks
+# =============================================================================
+networks:
+  grpc-test:
+    driver: bridge

@@ -33,8 +33,15 @@ type Config struct {
 }
 
 // NewServer creates a new gRPC server instance.
-func NewServer(cfg Config, testService apiv1.TestServiceServer, logger *zap.Logger) *Server {
-	grpcServer := grpc.NewServer()
+// Optional grpc.ServerOption values can be passed to configure TLS, interceptors, etc.
+// When no options are provided, an insecure server is created (backward compatible).
+func NewServer(
+	cfg Config,
+	testService apiv1.TestServiceServer,
+	logger *zap.Logger,
+	opts ...grpc.ServerOption,
+) *Server {
+	grpcServer := grpc.NewServer(opts...)
 	healthServer := health.NewServer()
 
 	// Register services

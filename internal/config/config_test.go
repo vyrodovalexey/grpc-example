@@ -12,11 +12,22 @@ import (
 	"github.com/vyrodovalexey/grpc-example/internal/config"
 )
 
+// allEnvVars lists all config-related environment variables.
+var allEnvVars = []string{
+	"GRPC_PORT", "METRICS_PORT", "LOG_LEVEL", "SHUTDOWN_TIMEOUT",
+	"TLS_ENABLED", "TLS_MODE", "TLS_CERT_PATH", "TLS_KEY_PATH",
+	"TLS_CA_PATH", "TLS_CLIENT_AUTH",
+	"VAULT_ENABLED", "VAULT_ADDR", "VAULT_TOKEN", "VAULT_PKI_PATH",
+	"VAULT_PKI_ROLE", "VAULT_PKI_TTL",
+	"OIDC_ENABLED", "OIDC_ISSUER_URL", "OIDC_CLIENT_ID",
+	"OIDC_CLIENT_SECRET", "OIDC_AUDIENCE",
+	"AUTH_MODE",
+}
+
 // clearEnvVars clears all config-related environment variables.
 func clearEnvVars(t *testing.T) {
 	t.Helper()
-	envVars := []string{"GRPC_PORT", "METRICS_PORT", "LOG_LEVEL", "SHUTDOWN_TIMEOUT"}
-	for _, env := range envVars {
+	for _, env := range allEnvVars {
 		require.NoError(t, os.Unsetenv(env))
 	}
 }
@@ -46,6 +57,12 @@ func TestLoad(t *testing.T) {
 				assert.Equal(t, 9090, cfg.MetricsPort)
 				assert.Equal(t, "info", cfg.LogLevel)
 				assert.Equal(t, 30*time.Second, cfg.ShutdownTimeout)
+				assert.False(t, cfg.TLS.Enabled)
+				assert.Equal(t, "none", cfg.TLS.Mode)
+				assert.Equal(t, "none", cfg.TLS.ClientAuth)
+				assert.Equal(t, 24*time.Hour, cfg.TLS.VaultPKITTL)
+				assert.Equal(t, "none", cfg.Auth.Mode)
+				assert.False(t, cfg.Auth.OIDCEnabled)
 			},
 		},
 		{
@@ -245,25 +262,530 @@ func TestLoad(t *testing.T) {
 	}
 }
 
-func TestConfig_String(t *testing.T) {
+func TestLoad_TLSConfig(t *testing.T) {
 	tests := []struct {
-		name     string
-		config   *config.Config
-		contains []string
+		name        string
+		envVars     map[string]string
+		wantErr     bool
+		errContains string
+		validate    func(t *testing.T, cfg *config.Config)
 	}{
 		{
-			name: "string representation contains all fields",
+			name: "TLS enabled with cert and key",
+			envVars: map[string]string{
+				"TLS_ENABLED":   "true",
+				"TLS_MODE":      "tls",
+				"TLS_CERT_PATH": "/path/to/cert.pem",
+				"TLS_KEY_PATH":  "/path/to/key.pem",
+			},
+			wantErr: false,
+			validate: func(t *testing.T, cfg *config.Config) {
+				assert.True(t, cfg.TLS.Enabled)
+				assert.Equal(t, "tls", cfg.TLS.Mode)
+				assert.Equal(t, "/path/to/cert.pem", cfg.TLS.CertPath)
+				assert.Equal(t, "/path/to/key.pem", cfg.TLS.KeyPath)
+			},
+		},
+		{
+			name: "TLS enabled mTLS mode with CA",
+			envVars: map[string]string{
+				"TLS_ENABLED":   "true",
+				"TLS_MODE":      "mtls",
+				"TLS_CERT_PATH": "/path/to/cert.pem",
+				"TLS_KEY_PATH":  "/path/to/key.pem",
+				"TLS_CA_PATH":   "/path/to/ca.pem",
+			},
+			wantErr: false,
+			validate: func(t *testing.T, cfg *config.Config) {
+				assert.True(t, cfg.TLS.Enabled)
+				assert.Equal(t, "mtls", cfg.TLS.Mode)
+				assert.Equal(t, "/path/to/ca.pem", cfg.TLS.CAPath)
+			},
+		},
+		{
+			name: "TLS enabled with client auth",
+			envVars: map[string]string{
+				"TLS_ENABLED":     "true",
+				"TLS_MODE":        "tls",
+				"TLS_CERT_PATH":   "/path/to/cert.pem",
+				"TLS_KEY_PATH":    "/path/to/key.pem",
+				"TLS_CLIENT_AUTH": "request",
+			},
+			wantErr: false,
+			validate: func(t *testing.T, cfg *config.Config) {
+				assert.Equal(t, "request", cfg.TLS.ClientAuth)
+			},
+		},
+		{
+			name: "TLS enabled - missing cert path",
+			envVars: map[string]string{
+				"TLS_ENABLED":  "true",
+				"TLS_MODE":     "tls",
+				"TLS_KEY_PATH": "/path/to/key.pem",
+			},
+			wantErr:     true,
+			errContains: "TLS certificate path is required",
+		},
+		{
+			name: "TLS enabled - missing key path",
+			envVars: map[string]string{
+				"TLS_ENABLED":   "true",
+				"TLS_MODE":      "tls",
+				"TLS_CERT_PATH": "/path/to/cert.pem",
+			},
+			wantErr:     true,
+			errContains: "TLS key path is required",
+		},
+		{
+			name: "mTLS mode - missing CA path",
+			envVars: map[string]string{
+				"TLS_ENABLED":   "true",
+				"TLS_MODE":      "mtls",
+				"TLS_CERT_PATH": "/path/to/cert.pem",
+				"TLS_KEY_PATH":  "/path/to/key.pem",
+			},
+			wantErr:     true,
+			errContains: "TLS CA path is required",
+		},
+		{
+			name: "invalid TLS_ENABLED value",
+			envVars: map[string]string{
+				"TLS_ENABLED": "notabool",
+			},
+			wantErr:     true,
+			errContains: "parsing TLS_ENABLED",
+		},
+		{
+			name: "invalid TLS mode",
+			envVars: map[string]string{
+				"TLS_ENABLED":   "true",
+				"TLS_MODE":      "invalid",
+				"TLS_CERT_PATH": "/path/to/cert.pem",
+				"TLS_KEY_PATH":  "/path/to/key.pem",
+			},
+			wantErr:     true,
+			errContains: "invalid TLS mode",
+		},
+		{
+			name: "invalid client auth mode",
+			envVars: map[string]string{
+				"TLS_ENABLED":     "true",
+				"TLS_MODE":        "tls",
+				"TLS_CERT_PATH":   "/path/to/cert.pem",
+				"TLS_KEY_PATH":    "/path/to/key.pem",
+				"TLS_CLIENT_AUTH": "invalid",
+			},
+			wantErr:     true,
+			errContains: "invalid client auth",
+		},
+		{
+			name: "TLS disabled - no validation of cert paths",
+			envVars: map[string]string{
+				"TLS_ENABLED": "false",
+			},
+			wantErr: false,
+			validate: func(t *testing.T, cfg *config.Config) {
+				assert.False(t, cfg.TLS.Enabled)
+			},
+		},
+		{
+			name: "TLS enabled with Vault - cert path not required",
+			envVars: map[string]string{
+				"TLS_ENABLED":   "true",
+				"TLS_MODE":      "tls",
+				"VAULT_ENABLED": "true",
+				"VAULT_ADDR":    "http://vault:8200",
+			},
+			wantErr: false,
+			validate: func(t *testing.T, cfg *config.Config) {
+				assert.True(t, cfg.TLS.Enabled)
+				assert.True(t, cfg.TLS.VaultEnabled)
+			},
+		},
+		{
+			name: "mTLS with Vault - CA path not required",
+			envVars: map[string]string{
+				"TLS_ENABLED":   "true",
+				"TLS_MODE":      "mtls",
+				"VAULT_ENABLED": "true",
+				"VAULT_ADDR":    "http://vault:8200",
+			},
+			wantErr: false,
+			validate: func(t *testing.T, cfg *config.Config) {
+				assert.True(t, cfg.TLS.Enabled)
+				assert.Equal(t, "mtls", cfg.TLS.Mode)
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Arrange
+			clearEnvVars(t)
+			setEnvVars(t, tt.envVars)
+			t.Cleanup(func() { clearEnvVars(t) })
+
+			// Act
+			cfg, err := config.Load()
+
+			// Assert
+			if tt.wantErr {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tt.errContains)
+			} else {
+				require.NoError(t, err)
+				require.NotNil(t, cfg)
+				if tt.validate != nil {
+					tt.validate(t, cfg)
+				}
+			}
+		})
+	}
+}
+
+func TestLoad_VaultConfig(t *testing.T) {
+	tests := []struct {
+		name        string
+		envVars     map[string]string
+		wantErr     bool
+		errContains string
+		validate    func(t *testing.T, cfg *config.Config)
+	}{
+		{
+			name: "vault config loaded from env",
+			envVars: map[string]string{
+				"VAULT_ENABLED":  "true",
+				"VAULT_ADDR":     "http://vault:8200",
+				"VAULT_TOKEN":    "s.test-token",
+				"VAULT_PKI_PATH": "pki/intermediate",
+				"VAULT_PKI_ROLE": "grpc-server",
+				"VAULT_PKI_TTL":  "48h",
+			},
+			wantErr: false,
+			validate: func(t *testing.T, cfg *config.Config) {
+				assert.True(t, cfg.TLS.VaultEnabled)
+				assert.Equal(t, "http://vault:8200", cfg.TLS.VaultAddr)
+				assert.Equal(t, "s.test-token", cfg.TLS.VaultToken)
+				assert.Equal(t, "pki/intermediate", cfg.TLS.VaultPKIPath)
+				assert.Equal(t, "grpc-server", cfg.TLS.VaultPKIRole)
+				assert.Equal(t, 48*time.Hour, cfg.TLS.VaultPKITTL)
+			},
+		},
+		{
+			name: "invalid VAULT_ENABLED value",
+			envVars: map[string]string{
+				"VAULT_ENABLED": "notabool",
+			},
+			wantErr:     true,
+			errContains: "parsing VAULT_ENABLED",
+		},
+		{
+			name: "invalid VAULT_PKI_TTL value",
+			envVars: map[string]string{
+				"VAULT_PKI_TTL": "invalid",
+			},
+			wantErr:     true,
+			errContains: "parsing VAULT_PKI_TTL",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Arrange
+			clearEnvVars(t)
+			setEnvVars(t, tt.envVars)
+			t.Cleanup(func() { clearEnvVars(t) })
+
+			// Act
+			cfg, err := config.Load()
+
+			// Assert
+			if tt.wantErr {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tt.errContains)
+			} else {
+				require.NoError(t, err)
+				require.NotNil(t, cfg)
+				if tt.validate != nil {
+					tt.validate(t, cfg)
+				}
+			}
+		})
+	}
+}
+
+func TestLoad_OIDCConfig(t *testing.T) {
+	tests := []struct {
+		name        string
+		envVars     map[string]string
+		wantErr     bool
+		errContains string
+		validate    func(t *testing.T, cfg *config.Config)
+	}{
+		{
+			name: "OIDC config loaded from env",
+			envVars: map[string]string{
+				"OIDC_ENABLED":       "true",
+				"OIDC_ISSUER_URL":    "https://issuer.example.com",
+				"OIDC_CLIENT_ID":     "test-client",
+				"OIDC_CLIENT_SECRET": "secret123",
+				"OIDC_AUDIENCE":      "api.example.com",
+			},
+			wantErr: false,
+			validate: func(t *testing.T, cfg *config.Config) {
+				assert.True(t, cfg.Auth.OIDCEnabled)
+				assert.Equal(t, "https://issuer.example.com", cfg.Auth.OIDCIssuerURL)
+				assert.Equal(t, "test-client", cfg.Auth.OIDCClientID)
+				assert.Equal(t, "secret123", cfg.Auth.OIDCClientSecret)
+				assert.Equal(t, "api.example.com", cfg.Auth.OIDCAudience)
+			},
+		},
+		{
+			name: "OIDC enabled - missing issuer URL",
+			envVars: map[string]string{
+				"OIDC_ENABLED":   "true",
+				"OIDC_CLIENT_ID": "test-client",
+			},
+			wantErr:     true,
+			errContains: "OIDC issuer URL is required",
+		},
+		{
+			name: "OIDC enabled - missing client ID",
+			envVars: map[string]string{
+				"OIDC_ENABLED":    "true",
+				"OIDC_ISSUER_URL": "https://issuer.example.com",
+			},
+			wantErr:     true,
+			errContains: "OIDC client ID is required",
+		},
+		{
+			name: "invalid OIDC_ENABLED value",
+			envVars: map[string]string{
+				"OIDC_ENABLED": "notabool",
+			},
+			wantErr:     true,
+			errContains: "parsing OIDC_ENABLED",
+		},
+		{
+			name: "OIDC disabled - no validation",
+			envVars: map[string]string{
+				"OIDC_ENABLED": "false",
+			},
+			wantErr: false,
+			validate: func(t *testing.T, cfg *config.Config) {
+				assert.False(t, cfg.Auth.OIDCEnabled)
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Arrange
+			clearEnvVars(t)
+			setEnvVars(t, tt.envVars)
+			t.Cleanup(func() { clearEnvVars(t) })
+
+			// Act
+			cfg, err := config.Load()
+
+			// Assert
+			if tt.wantErr {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tt.errContains)
+			} else {
+				require.NoError(t, err)
+				require.NotNil(t, cfg)
+				if tt.validate != nil {
+					tt.validate(t, cfg)
+				}
+			}
+		})
+	}
+}
+
+func TestLoad_AuthModeConfig(t *testing.T) {
+	tests := []struct {
+		name        string
+		envVars     map[string]string
+		wantErr     bool
+		errContains string
+		validate    func(t *testing.T, cfg *config.Config)
+	}{
+		{
+			name: "auth mode none",
+			envVars: map[string]string{
+				"AUTH_MODE": "none",
+			},
+			wantErr: false,
+			validate: func(t *testing.T, cfg *config.Config) {
+				assert.Equal(t, "none", cfg.Auth.Mode)
+			},
+		},
+		{
+			name: "auth mode mtls",
+			envVars: map[string]string{
+				"AUTH_MODE": "mtls",
+			},
+			wantErr: false,
+			validate: func(t *testing.T, cfg *config.Config) {
+				assert.Equal(t, "mtls", cfg.Auth.Mode)
+			},
+		},
+		{
+			name: "auth mode oidc",
+			envVars: map[string]string{
+				"AUTH_MODE": "oidc",
+			},
+			wantErr: false,
+			validate: func(t *testing.T, cfg *config.Config) {
+				assert.Equal(t, "oidc", cfg.Auth.Mode)
+			},
+		},
+		{
+			name: "auth mode both",
+			envVars: map[string]string{
+				"AUTH_MODE": "both",
+			},
+			wantErr: false,
+			validate: func(t *testing.T, cfg *config.Config) {
+				assert.Equal(t, "both", cfg.Auth.Mode)
+			},
+		},
+		{
+			name: "invalid auth mode",
+			envVars: map[string]string{
+				"AUTH_MODE": "invalid",
+			},
+			wantErr:     true,
+			errContains: "invalid auth mode",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Arrange
+			clearEnvVars(t)
+			setEnvVars(t, tt.envVars)
+			t.Cleanup(func() { clearEnvVars(t) })
+
+			// Act
+			cfg, err := config.Load()
+
+			// Assert
+			if tt.wantErr {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tt.errContains)
+			} else {
+				require.NoError(t, err)
+				require.NotNil(t, cfg)
+				if tt.validate != nil {
+					tt.validate(t, cfg)
+				}
+			}
+		})
+	}
+}
+
+func TestConfig_String(t *testing.T) {
+	tests := []struct {
+		name        string
+		config      *config.Config
+		contains    []string
+		notContains []string
+	}{
+		{
+			name: "basic config - TLS disabled",
 			config: &config.Config{
 				GRPCPort:        50051,
 				MetricsPort:     9090,
 				LogLevel:        "info",
 				ShutdownTimeout: 30 * time.Second,
+				Auth: config.AuthConfig{
+					Mode: "none",
+				},
 			},
 			contains: []string{
 				"GRPCPort: 50051",
 				"MetricsPort: 9090",
 				"LogLevel: info",
 				"ShutdownTimeout: 30s",
+				"TLS: disabled",
+				"AuthMode: none",
+			},
+		},
+		{
+			name: "TLS enabled config",
+			config: &config.Config{
+				GRPCPort:        50051,
+				MetricsPort:     9090,
+				LogLevel:        "info",
+				ShutdownTimeout: 30 * time.Second,
+				TLS: config.TLSConfig{
+					Enabled: true,
+					Mode:    "tls",
+				},
+				Auth: config.AuthConfig{
+					Mode: "none",
+				},
+			},
+			contains: []string{
+				"TLS: enabled",
+				"TLSMode: tls",
+			},
+			notContains: []string{
+				"TLS: disabled",
+			},
+		},
+		{
+			name: "TLS enabled with Vault - token masked",
+			config: &config.Config{
+				GRPCPort:        50051,
+				MetricsPort:     9090,
+				LogLevel:        "info",
+				ShutdownTimeout: 30 * time.Second,
+				TLS: config.TLSConfig{
+					Enabled:      true,
+					Mode:         "mtls",
+					VaultEnabled: true,
+					VaultAddr:    "http://vault:8200",
+					VaultToken:   "s.super-secret-token",
+				},
+				Auth: config.AuthConfig{
+					Mode: "none",
+				},
+			},
+			contains: []string{
+				"TLS: enabled",
+				"TLSMode: mtls",
+				"VaultAddr: http://vault:8200",
+				"VaultToken: ****",
+			},
+			notContains: []string{
+				"s.super-secret-token",
+			},
+		},
+		{
+			name: "OIDC enabled - client secret masked",
+			config: &config.Config{
+				GRPCPort:        50051,
+				MetricsPort:     9090,
+				LogLevel:        "info",
+				ShutdownTimeout: 30 * time.Second,
+				Auth: config.AuthConfig{
+					Mode:             "oidc",
+					OIDCEnabled:      true,
+					OIDCIssuerURL:    "https://issuer.example.com",
+					OIDCClientSecret: "super-secret",
+				},
+			},
+			contains: []string{
+				"AuthMode: oidc",
+				"OIDC: enabled",
+				"OIDCIssuer: https://issuer.example.com",
+				"OIDCClientSecret: ****",
+			},
+			notContains: []string{
+				"super-secret",
 			},
 		},
 		{
@@ -273,6 +795,9 @@ func TestConfig_String(t *testing.T) {
 				MetricsPort:     9091,
 				LogLevel:        "debug",
 				ShutdownTimeout: 60 * time.Second,
+				Auth: config.AuthConfig{
+					Mode: "none",
+				},
 			},
 			contains: []string{
 				"GRPCPort: 8080",
@@ -291,6 +816,9 @@ func TestConfig_String(t *testing.T) {
 			// Assert
 			for _, substr := range tt.contains {
 				assert.Contains(t, result, substr)
+			}
+			for _, substr := range tt.notContains {
+				assert.NotContains(t, result, substr)
 			}
 		})
 	}
@@ -391,6 +919,244 @@ func TestConfig_Validate(t *testing.T) {
 				ShutdownTimeout: -1 * time.Second,
 			},
 			wantErr: config.ErrInvalidShutdownTimeout,
+		},
+		{
+			name: "valid TLS config",
+			config: &config.Config{
+				GRPCPort:        50051,
+				MetricsPort:     9090,
+				LogLevel:        "info",
+				ShutdownTimeout: 30 * time.Second,
+				TLS: config.TLSConfig{
+					Enabled:    true,
+					Mode:       "tls",
+					CertPath:   "/path/to/cert.pem",
+					KeyPath:    "/path/to/key.pem",
+					ClientAuth: "none",
+				},
+			},
+			wantErr: nil,
+		},
+		{
+			name: "invalid TLS mode",
+			config: &config.Config{
+				GRPCPort:        50051,
+				MetricsPort:     9090,
+				LogLevel:        "info",
+				ShutdownTimeout: 30 * time.Second,
+				TLS: config.TLSConfig{
+					Enabled:    true,
+					Mode:       "invalid",
+					CertPath:   "/path/to/cert.pem",
+					KeyPath:    "/path/to/key.pem",
+					ClientAuth: "none",
+				},
+			},
+			wantErr: config.ErrInvalidTLSMode,
+		},
+		{
+			name: "invalid client auth",
+			config: &config.Config{
+				GRPCPort:        50051,
+				MetricsPort:     9090,
+				LogLevel:        "info",
+				ShutdownTimeout: 30 * time.Second,
+				TLS: config.TLSConfig{
+					Enabled:    true,
+					Mode:       "tls",
+					CertPath:   "/path/to/cert.pem",
+					KeyPath:    "/path/to/key.pem",
+					ClientAuth: "invalid",
+				},
+			},
+			wantErr: config.ErrInvalidClientAuth,
+		},
+		{
+			name: "TLS enabled - missing cert path",
+			config: &config.Config{
+				GRPCPort:        50051,
+				MetricsPort:     9090,
+				LogLevel:        "info",
+				ShutdownTimeout: 30 * time.Second,
+				TLS: config.TLSConfig{
+					Enabled:    true,
+					Mode:       "tls",
+					CertPath:   "",
+					KeyPath:    "/path/to/key.pem",
+					ClientAuth: "none",
+				},
+			},
+			wantErr: config.ErrTLSCertRequired,
+		},
+		{
+			name: "TLS enabled - missing key path",
+			config: &config.Config{
+				GRPCPort:        50051,
+				MetricsPort:     9090,
+				LogLevel:        "info",
+				ShutdownTimeout: 30 * time.Second,
+				TLS: config.TLSConfig{
+					Enabled:    true,
+					Mode:       "tls",
+					CertPath:   "/path/to/cert.pem",
+					KeyPath:    "",
+					ClientAuth: "none",
+				},
+			},
+			wantErr: config.ErrTLSKeyRequired,
+		},
+		{
+			name: "mTLS mode - missing CA path",
+			config: &config.Config{
+				GRPCPort:        50051,
+				MetricsPort:     9090,
+				LogLevel:        "info",
+				ShutdownTimeout: 30 * time.Second,
+				TLS: config.TLSConfig{
+					Enabled:    true,
+					Mode:       "mtls",
+					CertPath:   "/path/to/cert.pem",
+					KeyPath:    "/path/to/key.pem",
+					CAPath:     "",
+					ClientAuth: "none",
+				},
+			},
+			wantErr: config.ErrTLSCARequired,
+		},
+		{
+			name: "TLS enabled with Vault - cert path not required",
+			config: &config.Config{
+				GRPCPort:        50051,
+				MetricsPort:     9090,
+				LogLevel:        "info",
+				ShutdownTimeout: 30 * time.Second,
+				TLS: config.TLSConfig{
+					Enabled:      true,
+					Mode:         "tls",
+					VaultEnabled: true,
+					ClientAuth:   "none",
+				},
+			},
+			wantErr: nil,
+		},
+		{
+			name: "invalid auth mode",
+			config: &config.Config{
+				GRPCPort:        50051,
+				MetricsPort:     9090,
+				LogLevel:        "info",
+				ShutdownTimeout: 30 * time.Second,
+				Auth: config.AuthConfig{
+					Mode: "invalid",
+				},
+			},
+			wantErr: config.ErrInvalidAuthMode,
+		},
+		{
+			name: "OIDC enabled - missing issuer",
+			config: &config.Config{
+				GRPCPort:        50051,
+				MetricsPort:     9090,
+				LogLevel:        "info",
+				ShutdownTimeout: 30 * time.Second,
+				Auth: config.AuthConfig{
+					Mode:         "oidc",
+					OIDCEnabled:  true,
+					OIDCClientID: "test",
+				},
+			},
+			wantErr: config.ErrOIDCIssuerRequired,
+		},
+		{
+			name: "OIDC enabled - missing client ID",
+			config: &config.Config{
+				GRPCPort:        50051,
+				MetricsPort:     9090,
+				LogLevel:        "info",
+				ShutdownTimeout: 30 * time.Second,
+				Auth: config.AuthConfig{
+					Mode:          "oidc",
+					OIDCEnabled:   true,
+					OIDCIssuerURL: "https://issuer.example.com",
+				},
+			},
+			wantErr: config.ErrOIDCClientIDRequired,
+		},
+		{
+			name: "valid OIDC config",
+			config: &config.Config{
+				GRPCPort:        50051,
+				MetricsPort:     9090,
+				LogLevel:        "info",
+				ShutdownTimeout: 30 * time.Second,
+				Auth: config.AuthConfig{
+					Mode:          "oidc",
+					OIDCEnabled:   true,
+					OIDCIssuerURL: "https://issuer.example.com",
+					OIDCClientID:  "test-client",
+				},
+			},
+			wantErr: nil,
+		},
+		{
+			name: "TLS disabled - empty mode and client auth treated as defaults",
+			config: &config.Config{
+				GRPCPort:        50051,
+				MetricsPort:     9090,
+				LogLevel:        "info",
+				ShutdownTimeout: 30 * time.Second,
+				TLS: config.TLSConfig{
+					Enabled: false,
+				},
+			},
+			wantErr: nil,
+		},
+		{
+			name: "TLS enabled - empty mode defaults to none",
+			config: &config.Config{
+				GRPCPort:        50051,
+				MetricsPort:     9090,
+				LogLevel:        "info",
+				ShutdownTimeout: 30 * time.Second,
+				TLS: config.TLSConfig{
+					Enabled:    true,
+					Mode:       "",
+					CertPath:   "/path/to/cert.pem",
+					KeyPath:    "/path/to/key.pem",
+					ClientAuth: "none",
+				},
+			},
+			wantErr: nil,
+		},
+		{
+			name: "TLS enabled - empty client auth defaults to none",
+			config: &config.Config{
+				GRPCPort:        50051,
+				MetricsPort:     9090,
+				LogLevel:        "info",
+				ShutdownTimeout: 30 * time.Second,
+				TLS: config.TLSConfig{
+					Enabled:    true,
+					Mode:       "tls",
+					CertPath:   "/path/to/cert.pem",
+					KeyPath:    "/path/to/key.pem",
+					ClientAuth: "",
+				},
+			},
+			wantErr: nil,
+		},
+		{
+			name: "empty auth mode defaults to none",
+			config: &config.Config{
+				GRPCPort:        50051,
+				MetricsPort:     9090,
+				LogLevel:        "info",
+				ShutdownTimeout: 30 * time.Second,
+				Auth: config.AuthConfig{
+					Mode: "",
+				},
+			},
+			wantErr: nil,
 		},
 	}
 
@@ -581,4 +1347,88 @@ func TestConfigStringFormat(t *testing.T) {
 	// Assert
 	assert.True(t, strings.HasPrefix(result, "Config{"))
 	assert.True(t, strings.HasSuffix(result, "}"))
+}
+
+func TestValidTLSModes(t *testing.T) {
+	validModes := []string{"none", "tls", "mtls"}
+
+	for _, mode := range validModes {
+		t.Run("valid_tls_mode_"+mode, func(t *testing.T) {
+			// Arrange
+			cfg := &config.Config{
+				GRPCPort:        50051,
+				MetricsPort:     9090,
+				LogLevel:        "info",
+				ShutdownTimeout: 30 * time.Second,
+				TLS: config.TLSConfig{
+					Enabled:    true,
+					Mode:       mode,
+					CertPath:   "/path/to/cert.pem",
+					KeyPath:    "/path/to/key.pem",
+					CAPath:     "/path/to/ca.pem",
+					ClientAuth: "none",
+				},
+			}
+
+			// Act
+			err := cfg.Validate()
+
+			// Assert
+			require.NoError(t, err)
+		})
+	}
+}
+
+func TestValidClientAuthModes(t *testing.T) {
+	validModes := []string{"none", "request", "require"}
+
+	for _, mode := range validModes {
+		t.Run("valid_client_auth_"+mode, func(t *testing.T) {
+			// Arrange
+			cfg := &config.Config{
+				GRPCPort:        50051,
+				MetricsPort:     9090,
+				LogLevel:        "info",
+				ShutdownTimeout: 30 * time.Second,
+				TLS: config.TLSConfig{
+					Enabled:    true,
+					Mode:       "tls",
+					CertPath:   "/path/to/cert.pem",
+					KeyPath:    "/path/to/key.pem",
+					ClientAuth: mode,
+				},
+			}
+
+			// Act
+			err := cfg.Validate()
+
+			// Assert
+			require.NoError(t, err)
+		})
+	}
+}
+
+func TestValidAuthModes(t *testing.T) {
+	validModes := []string{"none", "mtls", "oidc", "both"}
+
+	for _, mode := range validModes {
+		t.Run("valid_auth_mode_"+mode, func(t *testing.T) {
+			// Arrange
+			cfg := &config.Config{
+				GRPCPort:        50051,
+				MetricsPort:     9090,
+				LogLevel:        "info",
+				ShutdownTimeout: 30 * time.Second,
+				Auth: config.AuthConfig{
+					Mode: mode,
+				},
+			}
+
+			// Act
+			err := cfg.Validate()
+
+			// Assert
+			require.NoError(t, err)
+		})
+	}
 }
