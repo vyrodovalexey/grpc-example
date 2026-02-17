@@ -1,11 +1,11 @@
 # gRPC Test Server
 
-[![CI](https://github.com/vyrodovalexey/grpc-example/actions/workflows/pr.yml/badge.svg)](https://github.com/vyrodovalexey/grpc-example/actions/workflows/pr.yml)
+[![CI](https://github.com/vyrodovalexey/grpc-example/actions/workflows/ci.yml/badge.svg)](https://github.com/vyrodovalexey/grpc-example/actions/workflows/ci.yml)
 [![Coverage](https://codecov.io/gh/alexey/grpc-example/branch/main/graph/badge.svg)](https://codecov.io/gh/alexey/grpc-example)
-[![Go Version](https://img.shields.io/badge/go-1.24-blue.svg)](https://golang.org/dl/)
+[![Go Version](https://img.shields.io/badge/go-1.25.7-blue.svg)](https://golang.org/dl/)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
-A comprehensive gRPC test server implementation in Go, designed for testing and development purposes. This server provides three different types of gRPC endpoints to demonstrate various communication patterns.
+A comprehensive gRPC test server implementation in Go, designed for testing and development purposes. This server provides three different types of gRPC endpoints to demonstrate various communication patterns with advanced authentication capabilities.
 
 ## Table of Contents
 
@@ -13,7 +13,9 @@ A comprehensive gRPC test server implementation in Go, designed for testing and 
 - [Features](#features)
 - [Prerequisites](#prerequisites)
 - [Quick Start](#quick-start)
+- [Authentication](#authentication)
 - [Configuration](#configuration)
+- [Test Environment](#test-environment)
 - [API Reference](#api-reference)
 - [Development](#development)
 - [Docker](#docker)
@@ -28,14 +30,18 @@ This project implements a gRPC test server with three endpoint types:
 - **Server Streaming RPC** - Server sends multiple responses for a single request
 - **Bidirectional Streaming RPC** - Both client and server can send multiple messages
 
-The server is built with production-ready features including structured logging, graceful shutdown, comprehensive testing, and Docker support.
+The server is built with production-ready features including structured logging, graceful shutdown, comprehensive testing, Docker support, and advanced authentication capabilities.
 
 ## Features
 
 - ✅ Three gRPC endpoint types (Unary, Server Streaming, Bidirectional Streaming)
+- ✅ **mTLS authentication** with certificate-based client verification
+- ✅ **OIDC authentication** with OpenID Connect token validation
+- ✅ **Vault PKI integration** for automated certificate management
+- ✅ **Keycloak integration** for identity and access management
 - ✅ Structured JSON logging with configurable levels
 - ✅ Graceful shutdown with configurable timeout
-- ✅ Comprehensive unit and functional tests
+- ✅ Comprehensive unit, functional, integration, and e2e tests
 - ✅ Docker support with multi-stage builds
 - ✅ CI/CD pipelines with GitHub Actions
 - ✅ Code quality checks (linting, vulnerability scanning)
@@ -45,9 +51,9 @@ The server is built with production-ready features including structured logging,
 
 ## Prerequisites
 
-- **Go 1.24+** - [Download](https://golang.org/dl/)
+- **Go 1.25.7+** - [Download](https://golang.org/dl/)
 - **Protocol Buffers Compiler (protoc)** - [Installation Guide](https://grpc.io/docs/protoc-installation/)
-- **Docker** (optional) - [Download](https://www.docker.com/get-started)
+- **Docker and Docker Compose** (for test environment) - [Download](https://www.docker.com/get-started)
 
 ### Install Required Tools
 
@@ -78,7 +84,7 @@ cd grpc-example
 # Generate protobuf code, run tests, and build
 make all
 
-# Run the server
+# Run the server (no authentication)
 make run
 ```
 
@@ -111,9 +117,135 @@ grpcurl -plaintext -d '{"count": 5, "interval_ms": 1000}' \
 grpcurl -plaintext localhost:50051 api.v1.TestService/BidirectionalStream
 ```
 
+## Authentication
+
+The server supports multiple authentication modes to meet different security requirements.
+
+### Authentication Modes
+
+| Mode | Description | Use Case |
+|------|-------------|----------|
+| `none` | No authentication (default) | Development, backward compatibility |
+| `mtls` | Mutual TLS authentication | High-security environments, service-to-service |
+| `oidc` | OpenID Connect token authentication | User authentication, web applications |
+| `both` | Combined mTLS + OIDC | Maximum security, enterprise environments |
+
+### mTLS Configuration
+
+Mutual TLS provides certificate-based authentication where both client and server verify each other's identity.
+
+#### Environment Variables
+
+| Variable | Description | Default | Example |
+|----------|-------------|---------|---------|
+| `TLS_ENABLED` | Enable TLS/mTLS | `false` | `true` |
+| `TLS_MODE` | TLS mode | `server` | `server`, `mutual` |
+| `TLS_CERT_PATH` | Server certificate path | | `/certs/server.crt` |
+| `TLS_KEY_PATH` | Server private key path | | `/certs/server.key` |
+| `TLS_CA_PATH` | CA certificate path | | `/certs/ca.crt` |
+| `TLS_CLIENT_AUTH` | Client auth requirement | `NoClientCert` | `RequireAndVerifyClientCert` |
+
+#### Certificate Requirements
+
+- **Server Certificate**: Must include server hostname/IP in SAN
+- **Client Certificate**: Required for mTLS, must be signed by trusted CA
+- **CA Certificate**: Used to verify client certificates
+
+#### Vault PKI Integration
+
+Automatically generate and manage certificates using HashiCorp Vault:
+
+| Variable | Description | Default | Example |
+|----------|-------------|---------|---------|
+| `VAULT_ENABLED` | Enable Vault PKI | `false` | `true` |
+| `VAULT_ADDR` | Vault server address | | `https://vault.example.com:8200` |
+| `VAULT_TOKEN` | Vault authentication token | | `hvs.CAESIJ...` |
+| `VAULT_PKI_PATH` | PKI secrets engine path | `pki` | `pki_int` |
+| `VAULT_PKI_ROLE` | PKI role name | `server` | `grpc-server` |
+| `VAULT_PKI_TTL` | Certificate TTL | `24h` | `168h` |
+
+#### Example mTLS Setup
+
+```bash
+# Enable mTLS with Vault PKI
+export AUTH_MODE=mtls
+export TLS_ENABLED=true
+export TLS_MODE=mutual
+export TLS_CLIENT_AUTH=RequireAndVerifyClientCert
+export VAULT_ENABLED=true
+export VAULT_ADDR=https://vault.example.com:8200
+export VAULT_TOKEN=hvs.CAESIJ...
+export VAULT_PKI_ROLE=grpc-server
+
+./bin/grpc-server
+```
+
+### OIDC Configuration
+
+OpenID Connect provides token-based authentication using JWT tokens from an identity provider.
+
+#### Environment Variables
+
+| Variable | Description | Default | Example |
+|----------|-------------|---------|---------|
+| `OIDC_ENABLED` | Enable OIDC authentication | `false` | `true` |
+| `OIDC_ISSUER_URL` | OIDC issuer URL | | `https://keycloak.example.com/realms/grpc` |
+| `OIDC_CLIENT_ID` | OIDC client ID | | `grpc-server` |
+| `OIDC_CLIENT_SECRET` | OIDC client secret | | `grpc-server-secret` |
+| `OIDC_AUDIENCE` | Expected token audience | | `grpc-api` |
+
+#### Keycloak Integration
+
+The server integrates with Keycloak for identity and access management:
+
+1. **Realm Setup**: Create a realm for your gRPC services
+2. **Client Configuration**: Configure a confidential client with service account enabled
+3. **Token Validation**: Server validates JWT tokens against Keycloak's public keys
+
+#### Token Requirements
+
+- **Format**: JWT (JSON Web Token)
+- **Header**: Include in `Authorization: Bearer <token>` header
+- **Claims**: Must include valid `iss`, `aud`, `exp`, and `sub` claims
+- **Signature**: Must be signed by trusted issuer
+
+#### Example OIDC Setup
+
+```bash
+# Enable OIDC authentication
+export AUTH_MODE=oidc
+export OIDC_ENABLED=true
+export OIDC_ISSUER_URL=https://keycloak.example.com/realms/grpc
+export OIDC_CLIENT_ID=grpc-server
+export OIDC_CLIENT_SECRET=grpc-server-secret
+export OIDC_AUDIENCE=grpc-api
+
+./bin/grpc-server
+```
+
+#### Testing with OIDC
+
+```bash
+# Get token from Keycloak
+TOKEN=$(curl -s -X POST \
+  "https://keycloak.example.com/realms/grpc/protocol/openid-connect/token" \
+  -H "Content-Type: application/x-www-form-urlencoded" \
+  -d "grant_type=client_credentials" \
+  -d "client_id=grpc-server" \
+  -d "client_secret=grpc-server-secret" | jq -r '.access_token')
+
+# Use token with grpcurl
+grpcurl -plaintext \
+  -H "Authorization: Bearer $TOKEN" \
+  -d '{"message": "Hello, World!"}' \
+  localhost:50051 api.v1.TestService/Unary
+```
+
 ## Configuration
 
 The server can be configured using environment variables:
+
+### Core Configuration
 
 | Variable | Description | Default | Valid Values |
 |----------|-------------|---------|--------------|
@@ -122,13 +254,128 @@ The server can be configured using environment variables:
 | `LOG_LEVEL` | Logging level | `info` | `debug`, `info`, `warn`, `error` |
 | `SHUTDOWN_TIMEOUT` | Graceful shutdown timeout | `30s` | Duration string (e.g., `30s`, `1m`) |
 
+### Authentication Configuration
+
+| Variable | Description | Default | Valid Values |
+|----------|-------------|---------|--------------|
+| `AUTH_MODE` | Authentication mode | `none` | `none`, `mtls`, `oidc`, `both` |
+
+### TLS/mTLS Configuration
+
+| Variable | Description | Default | Example |
+|----------|-------------|---------|---------|
+| `TLS_ENABLED` | Enable TLS/mTLS | `false` | `true` |
+| `TLS_MODE` | TLS mode | `server` | `server`, `mutual` |
+| `TLS_CERT_PATH` | Server certificate path | | `/certs/server.crt` |
+| `TLS_KEY_PATH` | Server private key path | | `/certs/server.key` |
+| `TLS_CA_PATH` | CA certificate path | | `/certs/ca.crt` |
+| `TLS_CLIENT_AUTH` | Client auth requirement | `NoClientCert` | `RequireAndVerifyClientCert` |
+
+### Vault PKI Configuration
+
+| Variable | Description | Default | Example |
+|----------|-------------|---------|---------|
+| `VAULT_ENABLED` | Enable Vault PKI | `false` | `true` |
+| `VAULT_ADDR` | Vault server address | | `https://vault.example.com:8200` |
+| `VAULT_TOKEN` | Vault authentication token | | `hvs.CAESIJ...` |
+| `VAULT_PKI_PATH` | PKI secrets engine path | `pki` | `pki_int` |
+| `VAULT_PKI_ROLE` | PKI role name | `server` | `grpc-server` |
+| `VAULT_PKI_TTL` | Certificate TTL | `24h` | `168h` |
+
+### OIDC Configuration
+
+| Variable | Description | Default | Example |
+|----------|-------------|---------|---------|
+| `OIDC_ENABLED` | Enable OIDC authentication | `false` | `true` |
+| `OIDC_ISSUER_URL` | OIDC issuer URL | | `https://keycloak.example.com/realms/grpc` |
+| `OIDC_CLIENT_ID` | OIDC client ID | | `grpc-server` |
+| `OIDC_CLIENT_SECRET` | OIDC client secret | | `grpc-server-secret` |
+| `OIDC_AUDIENCE` | Expected token audience | | `grpc-api` |
+
 ### Example Configuration
 
 ```bash
+# Combined mTLS + OIDC authentication
+export AUTH_MODE=both
 export GRPC_PORT=8080
 export LOG_LEVEL=debug
 export SHUTDOWN_TIMEOUT=60s
+
+# TLS Configuration
+export TLS_ENABLED=true
+export TLS_MODE=mutual
+export TLS_CLIENT_AUTH=RequireAndVerifyClientCert
+
+# Vault PKI
+export VAULT_ENABLED=true
+export VAULT_ADDR=https://vault.example.com:8200
+export VAULT_TOKEN=hvs.CAESIJ...
+export VAULT_PKI_ROLE=grpc-server
+
+# OIDC
+export OIDC_ENABLED=true
+export OIDC_ISSUER_URL=https://keycloak.example.com/realms/grpc
+export OIDC_CLIENT_ID=grpc-server
+export OIDC_CLIENT_SECRET=grpc-server-secret
+
 ./bin/grpc-server
+```
+
+## Test Environment
+
+A complete test environment is provided using Docker Compose, including Vault and Keycloak services for testing authentication features.
+
+### Starting the Test Environment
+
+```bash
+# Start all services (Vault, Keycloak, PostgreSQL)
+make test-env-up
+
+# Check service status
+make test-env-status
+
+# View logs
+make test-env-logs
+
+# Stop all services
+make test-env-down
+```
+
+### Available Services
+
+| Service | Port | Description | Access |
+|---------|------|-------------|--------|
+| **Vault** | 8200 | HashiCorp Vault for PKI | http://localhost:8200 |
+| **Keycloak** | 8090 | Identity and Access Management | http://localhost:8090 |
+| **Keycloak Health** | 8091 | Keycloak health endpoint | http://localhost:8091 |
+| **PostgreSQL** | 5432 | Database for Keycloak | localhost:5432 |
+
+### Default Credentials
+
+- **Vault Root Token**: `myroot`
+- **Keycloak Admin**: `admin` / `admin`
+- **PostgreSQL**: `keycloak` / `password`
+
+### Running Different Test Types
+
+```bash
+# Unit tests (no external dependencies)
+make test-unit
+
+# Functional tests (basic server functionality)
+make test-functional
+
+# Integration tests (with test environment)
+make test-integration
+
+# End-to-end tests (full authentication flows)
+make test-e2e
+
+# Performance tests (load testing)
+make test-performance
+
+# Run all tests
+make test
 ```
 
 ## API Reference
@@ -274,13 +521,18 @@ message BidirectionalResponse {
 ├── api/proto/v1/          # Protocol buffer definitions
 ├── cmd/server/            # Application entry point
 ├── internal/
+│   ├── auth/             # Authentication implementations
 │   ├── config/           # Configuration management
 │   ├── server/           # gRPC server implementation
 │   └── service/          # Business logic
 ├── pkg/api/v1/           # Generated protobuf code
 ├── test/
-│   ├── functional/       # End-to-end tests
-│   └── cases/           # Test case definitions
+│   ├── functional/       # Functional tests
+│   ├── integration/      # Integration tests
+│   ├── e2e/             # End-to-end tests
+│   ├── performance/      # Performance tests
+│   ├── cases/           # Test case definitions
+│   └── docker-compose/  # Test environment configuration
 ├── .github/workflows/    # CI/CD pipelines
 ├── Dockerfile           # Docker build configuration
 ├── Makefile            # Build automation
@@ -309,11 +561,12 @@ make build-linux
 # Run all tests
 make test
 
-# Run only unit tests
-make test-unit
-
-# Run only functional tests
-make test-functional
+# Run specific test categories
+make test-unit          # Unit tests
+make test-functional    # Functional tests
+make test-integration   # Integration tests
+make test-e2e          # End-to-end tests
+make test-performance  # Performance tests
 
 # Generate coverage report
 make test-coverage
@@ -340,6 +593,18 @@ make vet
 ```bash
 # Show all available targets
 make help
+
+# Test environment targets
+make test-env-up        # Start test environment
+make test-env-down      # Stop test environment
+make test-env-status    # Check service status
+make test-env-logs      # View service logs
+make test-env-clean     # Clean test environment
+make test-env-wait      # Wait for services to be ready
+make test-integration   # Run integration tests
+make test-e2e          # Run end-to-end tests
+make test-performance  # Run performance tests
+make generate-certs    # Generate self-signed certificates
 ```
 
 ## Docker
@@ -357,13 +622,28 @@ make docker-size
 ### Running the Container
 
 ```bash
-# Run with default configuration
+# Run with default configuration (no authentication)
 make docker-run
 
-# Run with custom configuration
+# Run with mTLS authentication
 docker run --rm -p 8080:50051 \
-  -e GRPC_PORT=50051 \
-  -e LOG_LEVEL=debug \
+  -v /path/to/certs:/certs:ro \
+  -e AUTH_MODE=mtls \
+  -e TLS_ENABLED=true \
+  -e TLS_MODE=mutual \
+  -e TLS_CERT_PATH=/certs/server.crt \
+  -e TLS_KEY_PATH=/certs/server.key \
+  -e TLS_CA_PATH=/certs/ca.crt \
+  -e TLS_CLIENT_AUTH=RequireAndVerifyClientCert \
+  alexey/grpc-example:latest
+
+# Run with OIDC authentication
+docker run --rm -p 8080:50051 \
+  -e AUTH_MODE=oidc \
+  -e OIDC_ENABLED=true \
+  -e OIDC_ISSUER_URL=https://keycloak.example.com/realms/grpc \
+  -e OIDC_CLIENT_ID=grpc-server \
+  -e OIDC_CLIENT_SECRET=grpc-server-secret \
   alexey/grpc-example:latest
 ```
 
@@ -385,6 +665,15 @@ services:
       - METRICS_PORT=9090
       - LOG_LEVEL=info
       - SHUTDOWN_TIMEOUT=30s
+      - AUTH_MODE=both
+      - TLS_ENABLED=true
+      - TLS_MODE=mutual
+      - OIDC_ENABLED=true
+      - OIDC_ISSUER_URL=https://keycloak.example.com/realms/grpc
+      - OIDC_CLIENT_ID=grpc-server
+      - OIDC_CLIENT_SECRET=grpc-server-secret
+    volumes:
+      - ./certs:/certs:ro
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "grpcurl", "-plaintext", "localhost:50051", "list"]
@@ -402,15 +691,17 @@ docker-compose up -d
 
 ## CI/CD
 
-### Pull Request Workflow
+### CI Workflow
 
-The PR workflow (`.github/workflows/pr.yml`) runs on every pull request and includes:
+The CI workflow (`.github/workflows/ci.yml`) runs on pull requests and version tags and includes:
 
 1. **Parallel Stage:**
    - Code linting with golangci-lint
    - Vulnerability scanning with govulncheck
    - Unit tests with coverage reporting
    - Functional tests with coverage reporting
+   - Integration tests with test environment
+   - End-to-end authentication tests
 
 2. **Sequential Stage:**
    - SonarCloud code analysis
@@ -419,7 +710,7 @@ The PR workflow (`.github/workflows/pr.yml`) runs on every pull request and incl
 
 ### Release Workflow
 
-The release workflow (`.github/workflows/release.yml`) runs on version tags and includes:
+The CI workflow also handles releases when triggered by version tags and includes:
 
 1. **Quality Checks:** Same as PR workflow
 2. **Build & Release:**
@@ -491,3 +782,5 @@ If you encounter any issues or have questions:
 - [Protocol Buffers](https://developers.google.com/protocol-buffers) - Language-neutral data serialization
 - [Zap](https://github.com/uber-go/zap) - Structured logging library
 - [golangci-lint](https://golangci-lint.run/) - Go linters aggregator
+- [HashiCorp Vault](https://www.vaultproject.io/) - Secrets and certificate management
+- [Keycloak](https://www.keycloak.org/) - Identity and access management

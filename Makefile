@@ -39,7 +39,9 @@ GOLANGCI_LINT_VERSION := v2.1.6
 PROTOC_GEN_GO_VERSION := v1.36.6
 PROTOC_GEN_GO_GRPC_VERSION := v1.5.1
 
-.PHONY: all proto build test test-unit test-functional test-coverage lint vulncheck docker-build docker-push clean help tools
+.PHONY: all proto build test test-unit test-functional test-coverage lint vulncheck docker-build docker-push clean help tools \
+       test-env-up test-env-down test-env-logs test-env-clean test-env-status test-env-wait \
+       test-integration test-e2e test-performance generate-certs
 
 # Default target
 all: proto lint test build
@@ -156,6 +158,65 @@ tools: ## Install development tools
 	go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@$(PROTOC_GEN_GO_GRPC_VERSION)
 	go install golang.org/x/tools/cmd/goimports@latest
 	@echo "==> Tools installed"
+
+##@ Test Environment (docker-compose)
+
+COMPOSE_FILE := test/docker-compose/docker-compose.yml
+COMPOSE_ENV := test/docker-compose/.env.test
+COMPOSE_CMD := docker compose -f $(COMPOSE_FILE) --env-file $(COMPOSE_ENV) -p grpc-test
+
+test-env-up: ## Start test environment (Vault, Keycloak, gRPC server)
+	@echo "==> Starting test environment..."
+	$(COMPOSE_CMD) up -d --build
+	@echo "==> Test environment started"
+	@echo "    Vault:    http://localhost:$${VAULT_HOST_PORT:-8200}"
+	@echo "    Keycloak: http://localhost:$${KC_HOST_PORT:-8090}"
+	@echo "    gRPC:     localhost:$${GRPC_HOST_PORT:-50051}"
+
+test-env-down: ## Stop test environment
+	@echo "==> Stopping test environment..."
+	$(COMPOSE_CMD) down
+	@echo "==> Test environment stopped"
+
+test-env-logs: ## Show test environment logs (use SVC=<name> for a single service)
+	$(COMPOSE_CMD) logs -f $(SVC)
+
+test-env-clean: ## Stop test environment and remove volumes
+	@echo "==> Cleaning test environment (removing volumes)..."
+	$(COMPOSE_CMD) down -v --remove-orphans
+	@echo "==> Test environment cleaned"
+
+test-env-status: ## Show test environment service status
+	$(COMPOSE_CMD) ps
+
+test-env-wait: ## Wait for all test services to be healthy
+	@echo "==> Waiting for test services..."
+	@./test/docker-compose/scripts/wait-for-services.sh
+
+test-integration: test-env-up test-env-wait ## Run integration tests against test environment
+	@echo "==> Running integration tests..."
+	@mkdir -p $(COVERAGE_DIR)
+	go test -v -race -tags=integration -coverprofile=$(COVERAGE_DIR)/integration.out -covermode=atomic ./test/integration/... || \
+		($(COMPOSE_CMD) logs && exit 1)
+	@echo "==> Integration tests complete"
+
+test-e2e: test-env-up test-env-wait ## Run end-to-end tests against test environment
+	@echo "==> Running e2e tests..."
+	@mkdir -p $(COVERAGE_DIR)
+	go test -v -race -tags=e2e -timeout 5m -coverprofile=$(COVERAGE_DIR)/e2e.out -covermode=atomic ./test/e2e/... || \
+		($(COMPOSE_CMD) logs && exit 1)
+	@echo "==> E2E tests complete"
+
+test-performance: test-env-up test-env-wait ## Run performance tests against test environment
+	@echo "==> Running performance tests..."
+	go test -v -tags=performance -timeout 10m -run TestPerformance ./test/performance/... || \
+		($(COMPOSE_CMD) logs && exit 1)
+	@echo "==> Performance tests complete"
+
+generate-certs: ## Generate self-signed certificates for local testing (no Vault)
+	@echo "==> Generating self-signed certificates..."
+	@./test/docker-compose/scripts/generate-certs.sh ./certs
+	@echo "==> Certificates generated in ./certs"
 
 ##@ Cleanup
 

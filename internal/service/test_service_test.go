@@ -37,8 +37,8 @@ func (m *mockServerStream) SetHeader(metadata.MD) error  { return nil }
 func (m *mockServerStream) SendHeader(metadata.MD) error { return nil }
 func (m *mockServerStream) SetTrailer(metadata.MD)       {}
 func (m *mockServerStream) Context() context.Context     { return m.ctx }
-func (m *mockServerStream) SendMsg(interface{}) error    { return nil }
-func (m *mockServerStream) RecvMsg(interface{}) error    { return nil }
+func (m *mockServerStream) SendMsg(any) error            { return nil }
+func (m *mockServerStream) RecvMsg(any) error            { return nil }
 
 // mockBidirectionalStream implements grpc.BidiStreamingServer for testing.
 type mockBidirectionalStream struct {
@@ -74,8 +74,8 @@ func (m *mockBidirectionalStream) SetHeader(metadata.MD) error  { return nil }
 func (m *mockBidirectionalStream) SendHeader(metadata.MD) error { return nil }
 func (m *mockBidirectionalStream) SetTrailer(metadata.MD)       {}
 func (m *mockBidirectionalStream) Context() context.Context     { return m.ctx }
-func (m *mockBidirectionalStream) SendMsg(interface{}) error    { return nil }
-func (m *mockBidirectionalStream) RecvMsg(interface{}) error    { return nil }
+func (m *mockBidirectionalStream) SendMsg(any) error            { return nil }
+func (m *mockBidirectionalStream) RecvMsg(any) error            { return nil }
 
 func newTestLogger() *zap.Logger {
 	return zap.NewNop()
@@ -572,8 +572,8 @@ func (m *mockBidirectionalStreamWithCancelCheck) SetHeader(metadata.MD) error  {
 func (m *mockBidirectionalStreamWithCancelCheck) SendHeader(metadata.MD) error { return nil }
 func (m *mockBidirectionalStreamWithCancelCheck) SetTrailer(metadata.MD)       {}
 func (m *mockBidirectionalStreamWithCancelCheck) Context() context.Context     { return m.ctx }
-func (m *mockBidirectionalStreamWithCancelCheck) SendMsg(interface{}) error    { return nil }
-func (m *mockBidirectionalStreamWithCancelCheck) RecvMsg(interface{}) error    { return nil }
+func (m *mockBidirectionalStreamWithCancelCheck) SendMsg(any) error            { return nil }
+func (m *mockBidirectionalStreamWithCancelCheck) RecvMsg(any) error            { return nil }
 
 func TestTransformValueEdgeCases(t *testing.T) {
 	tests := []struct {

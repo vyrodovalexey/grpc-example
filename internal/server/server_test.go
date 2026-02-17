@@ -11,6 +11,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
 
 	"github.com/vyrodovalexey/grpc-example/internal/server"
 	apiv1 "github.com/vyrodovalexey/grpc-example/pkg/api/v1"
@@ -280,7 +281,7 @@ func TestServer_GracefulShutdownWithConnections(t *testing.T) {
 	// Create a gRPC connection
 	conn, err := grpc.NewClient(
 		formatPort(port),
-		grpc.WithInsecure(),
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
 	)
 	require.NoError(t, err)
 	defer func() { _ = conn.Close() }()
