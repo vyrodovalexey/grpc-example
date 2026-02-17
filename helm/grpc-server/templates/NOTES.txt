@@ -1,0 +1,84 @@
+Thank you for installing {{ .Chart.Name }}!
+
+Your release is named: {{ .Release.Name }}
+
+To get the application status, run:
+  kubectl get pods -l "app.kubernetes.io/name={{ include "grpc-server.name" . }},app.kubernetes.io/instance={{ .Release.Name }}"
+
+{{- if .Values.ingress.enabled }}
+
+The gRPC server is accessible via Ingress:
+{{- range $host := .Values.ingress.hosts }}
+  {{- range .paths }}
+  - {{ $host.host }}{{ .path }}
+  {{- end }}
+{{- end }}
+
+{{- else if contains "NodePort" .Values.service.type }}
+
+Get the gRPC server URL by running:
+  export NODE_PORT=$(kubectl get --namespace {{ .Release.Namespace }} -o jsonpath="{.spec.ports[0].nodePort}" services {{ include "grpc-server.fullname" . }})
+  export NODE_IP=$(kubectl get nodes --namespace {{ .Release.Namespace }} -o jsonpath="{.items[0].status.addresses[0].address}")
+  echo "gRPC server: $NODE_IP:$NODE_PORT"
+
+{{- else if contains "LoadBalancer" .Values.service.type }}
+
+Get the gRPC server URL by running:
+  NOTE: It may take a few minutes for the LoadBalancer IP to be available.
+  Watch the status with: kubectl get --namespace {{ .Release.Namespace }} svc -w {{ include "grpc-server.fullname" . }}
+
+  export SERVICE_IP=$(kubectl get svc --namespace {{ .Release.Namespace }} {{ include "grpc-server.fullname" . }} --template "{{"{{ range (index .status.loadBalancer.ingress 0) }}{{.}}{{ end }}"}}")
+  echo "gRPC server: $SERVICE_IP:{{ .Values.service.grpcPort }}"
+
+{{- else if contains "ClusterIP" .Values.service.type }}
+
+The gRPC server is accessible within the cluster at:
+  {{ include "grpc-server.fullname" . }}.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.service.grpcPort }}
+
+To access the gRPC server from your local machine, run:
+  kubectl port-forward --namespace {{ .Release.Namespace }} svc/{{ include "grpc-server.fullname" . }} {{ .Values.service.grpcPort }}:{{ .Values.service.grpcPort }}
+
+Then connect to: localhost:{{ .Values.service.grpcPort }}
+
+{{- end }}
+
+{{- if .Values.metrics.enabled }}
+
+Metrics are available at:
+  http://{{ include "grpc-server.fullname" . }}.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.service.metricsPort }}/metrics
+
+To access metrics from your local machine:
+  kubectl port-forward --namespace {{ .Release.Namespace }} svc/{{ include "grpc-server.fullname" . }} {{ .Values.service.metricsPort }}:{{ .Values.service.metricsPort }}
+
+Then visit: http://localhost:{{ .Values.service.metricsPort }}/metrics
+
+{{- end }}
+
+{{- if .Values.tls.enabled }}
+
+TLS is enabled with mode: {{ .Values.tls.mode }}
+{{- if .Values.vault.enabled }}
+Certificates are managed by Vault PKI at: {{ .Values.vault.addr }}
+{{- else }}
+Certificates are loaded from secret: {{ include "grpc-server.tlsSecretName" . }}
+{{- end }}
+
+{{- end }}
+
+{{- if .Values.oidc.enabled }}
+
+OIDC authentication is enabled:
+  Issuer: {{ .Values.oidc.issuerURL }}
+  Client ID: {{ .Values.oidc.clientID }}
+
+{{- end }}
+
+{{- if .Values.otel.enabled }}
+
+OpenTelemetry tracing is enabled:
+  Endpoint: {{ .Values.otel.endpoint }}
+  Service Name: {{ default (include "grpc-server.fullname" .) .Values.otel.serviceName }}
+
+{{- end }}
+
+For more information, visit: https://github.com/vyrodovalexey/grpc-example

@@ -23,6 +23,7 @@
 package logger
 
 import (
+	"errors"
 	"fmt"
 
 	"go.uber.org/zap"
@@ -30,7 +31,7 @@ import (
 )
 
 // ErrInvalidLogLevel is returned when an invalid log level string is provided.
-var ErrInvalidLogLevel = fmt.Errorf("invalid log level")
+var ErrInvalidLogLevel = errors.New("invalid log level")
 
 // InitLogger initializes a zap logger with the specified log level.
 //

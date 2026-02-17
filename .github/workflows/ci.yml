@@ -17,6 +17,7 @@ concurrency:
 env:
   GO_VERSION: '1.25.7'
   GOLANGCI_LINT_VERSION: 'v2.8.0'
+  HELM_VERSION: 'v3.17.0'
   DOCKER_REGISTRY: ghcr.io
   DOCKER_IMAGE: ghcr.io/${{ github.repository }}
 
@@ -32,16 +33,16 @@ jobs:
       contents: read
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
       - name: Set up Go
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@7a3fe6cf4cb3a834922a1244abfce67bcef6a0c5 # v6
         with:
           go-version: ${{ env.GO_VERSION }}
           cache: true
 
       - name: Run golangci-lint
-        uses: golangci/golangci-lint-action@v7
+        uses: golangci/golangci-lint-action@1e7e51e771db61008b38414a730f564565cf7c20 # v9.2.0
         with:
           version: ${{ env.GOLANGCI_LINT_VERSION }}
           args: --timeout=5m
@@ -53,10 +54,10 @@ jobs:
       contents: read
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
       - name: Set up Go
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@7a3fe6cf4cb3a834922a1244abfce67bcef6a0c5 # v6
         with:
           go-version: ${{ env.GO_VERSION }}
           cache: true
@@ -74,10 +75,10 @@ jobs:
       contents: read
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
       - name: Set up Go
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@7a3fe6cf4cb3a834922a1244abfce67bcef6a0c5 # v6
         with:
           go-version: ${{ env.GO_VERSION }}
           cache: true
@@ -87,7 +88,7 @@ jobs:
           go test -race -coverprofile=coverage-unit.out -covermode=atomic ./...
 
       - name: Upload coverage to Codecov
-        uses: codecov/codecov-action@v4
+        uses: codecov/codecov-action@671740ac38dd9b0130fbe1cec585b89eea48d3de # v5
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           files: ./coverage-unit.out
@@ -97,7 +98,7 @@ jobs:
           verbose: true
 
       - name: Upload coverage artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: coverage-unit
           path: coverage-unit.out
@@ -110,10 +111,10 @@ jobs:
       contents: read
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
       - name: Set up Go
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@7a3fe6cf4cb3a834922a1244abfce67bcef6a0c5 # v6
         with:
           go-version: ${{ env.GO_VERSION }}
           cache: true
@@ -123,7 +124,7 @@ jobs:
           go test -race -coverprofile=coverage-functional.out -covermode=atomic -tags=functional ./test/functional/...
 
       - name: Upload coverage to Codecov
-        uses: codecov/codecov-action@v4
+        uses: codecov/codecov-action@671740ac38dd9b0130fbe1cec585b89eea48d3de # v5
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           files: ./coverage-functional.out
@@ -133,18 +134,125 @@ jobs:
           verbose: true
 
       - name: Upload coverage artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: coverage-functional
           path: coverage-functional.out
           retention-days: 7
+
+  helm-lint:
+    name: Helm Lint & Dry-Run
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    needs: [ docker-build-pr ]
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+
+      - name: Set up Helm
+        uses: azure/setup-helm@fe7b79cd5ee1e45176fcad797de68ecaf3ca4814 # v4
+        with:
+          version: 'v3.14.0'
+
+      - name: Create kind cluster
+        uses: helm/kind-action@92086f6be054225fa813e0a4b13787fc9088faab # v1.13.0
+        with:
+          cluster_name: helm-test
+          wait: 120s
+
+      - name: Helm lint
+        run: |
+          echo "==> Linting Helm chart..."
+          helm lint helm/grpc-server
+
+      - name: Helm template validation
+        run: |
+          echo "==> Validating Helm templates..."
+          helm template grpc-server helm/grpc-server > /dev/null
+          echo "Template validation successful!"
+
+      - name: Template Helm chart (TLS enabled)
+        run: |
+          helm template grpc-server helm/grpc-server \
+            --set tls.enabled=true \
+            --set tls.mode=mtls \
+            --set tls.existingSecret=my-tls-secret
+
+      - name: Template Helm chart (Vault enabled)
+        run: |
+          helm template grpc-server helm/grpc-server \
+            --set tls.enabled=true \
+            --set tls.mode=mtls \
+            --set vault.enabled=true \
+            --set vault.addr=https://vault.example.com:8200 \
+            --set vault.tokenSecretName=vault-token
+
+
+
+      - name: Template Helm chart (OIDC enabled)
+        run: |
+          helm template grpc-server helm/grpc-server \
+            --set auth.mode=oidc \
+            --set oidc.enabled=true \
+            --set oidc.issuerURL=https://keycloak.example.com/realms/test \
+            --set oidc.clientID=grpc-server \
+            --set oidc.clientSecretName=oidc-secret
+
+      - name: Template Helm chart (OpenTelemetry enabled)
+        run: |
+          helm template grpc-server helm/grpc-server \
+            --set otel.enabled=true \
+            --set otel.endpoint=http://otel-collector:4317 \
+            --set otel.serviceName=grpc-server
+
+      - name: Template Helm chart (all features enabled)
+        run: |
+          helm template grpc-server helm/grpc-server \
+            --set tls.enabled=true \
+            --set tls.mode=mtls \
+            --set vault.enabled=true \
+            --set vault.addr=https://vault.example.com:8200 \
+            --set vault.tokenSecretName=vault-token \
+            --set auth.mode=both \
+            --set oidc.enabled=true \
+            --set oidc.issuerURL=https://keycloak.example.com/realms/test \
+            --set oidc.clientID=grpc-server \
+            --set oidc.clientSecretName=oidc-secret \
+            --set otel.enabled=true \
+            --set otel.endpoint=http://otel-collector:4317 \
+            --set autoscaling.enabled=true \
+            --set podDisruptionBudget.enabled=true \
+            --set metrics.serviceMonitor.enabled=true
+
+      - name: Template Helm chart (production config)
+        run: |
+          helm template grpc-server helm/grpc-server \
+            --set replicaCount=3 \
+            --set autoscaling.enabled=true \
+            --set autoscaling.minReplicas=3 \
+            --set autoscaling.maxReplicas=10 \
+            --set podDisruptionBudget.enabled=true \
+            --set podDisruptionBudget.minAvailable=2 \
+            --set resources.limits.cpu=1000m \
+            --set resources.limits.memory=256Mi
+
+      - name: Helm dry-run install
+        run: |
+          echo "==> Running Helm dry-run install..."
+          helm install --dry-run --debug grpc-server helm/grpc-server
+
+ 
 
   # ===========================================================================
   # Integration Tests (Vault and PostgreSQL as services, Keycloak via docker run)
   # ===========================================================================
 
   integration-tests:
-    name: Integration Tests
+    name: Integration Tests & E2E Tests
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -180,10 +288,10 @@ jobs:
           --health-start-period 5s
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
       - name: Set up Go
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@7a3fe6cf4cb3a834922a1244abfce67bcef6a0c5 # v6
         with:
           go-version: ${{ env.GO_VERSION }}
           cache: true
@@ -259,125 +367,6 @@ jobs:
           KC_CLIENT_ID: grpc-server
           KC_CLIENT_SECRET: grpc-server-secret
 
-      - name: Collect Keycloak logs on failure
-        if: failure()
-        run: docker logs keycloak 2>&1 || true
-
-      - name: Stop Keycloak
-        if: always()
-        run: docker rm -f keycloak || true
-
-  # ===========================================================================
-  # E2E Tests (full system test)
-  # ===========================================================================
-
-  e2e-tests:
-    name: E2E Tests
-    runs-on: ubuntu-latest
-    needs: [integration-tests]
-    permissions:
-      contents: read
-    services:
-      vault:
-        image: hashicorp/vault:1.17
-        env:
-          VAULT_DEV_ROOT_TOKEN_ID: myroot
-          VAULT_DEV_LISTEN_ADDRESS: "0.0.0.0:8200"
-          VAULT_ADDR: "http://127.0.0.1:8200"
-        ports:
-          - 8200:8200
-        options: >-
-          --cap-add IPC_LOCK
-          --health-cmd "vault status"
-          --health-interval 5s
-          --health-timeout 3s
-          --health-retries 15
-          --health-start-period 5s
-      postgres:
-        image: postgres:16-alpine
-        env:
-          POSTGRES_DB: keycloak
-          POSTGRES_USER: keycloak
-          POSTGRES_PASSWORD: password
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd "pg_isready -U keycloak -d keycloak"
-          --health-interval 5s
-          --health-timeout 3s
-          --health-retries 15
-          --health-start-period 5s
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Set up Go
-        uses: actions/setup-go@v6
-        with:
-          go-version: ${{ env.GO_VERSION }}
-          cache: true
-
-      - name: Start Keycloak
-        run: |
-          docker run -d --name keycloak \
-            --network host \
-            -e KC_DB=postgres \
-            -e "KC_DB_URL=jdbc:postgresql://localhost:5432/keycloak" \
-            -e KC_DB_USERNAME=keycloak \
-            -e KC_DB_PASSWORD=password \
-            -e KC_HTTP_PORT=8090 \
-            -e KC_HOSTNAME_STRICT=false \
-            -e KC_HOSTNAME_STRICT_HTTPS=false \
-            -e KC_HTTP_ENABLED=true \
-            -e "KC_FEATURES=token-exchange,admin-fine-grained-authz" \
-            -e KC_SPI_REALM_DEFAULT_SSL_REQUIRED=none \
-            -e KC_LOG_LEVEL=info \
-            -e KC_METRICS_ENABLED=true \
-            -e KC_HEALTH_ENABLED=true \
-            -e KEYCLOAK_ADMIN=admin \
-            -e KEYCLOAK_ADMIN_PASSWORD=admin \
-            -v "${{ github.workspace }}/test/docker-compose/config/keycloak-realm.json:/opt/keycloak/data/import/grpc-test-realm.json:ro" \
-            quay.io/keycloak/keycloak:26.5 \
-            start-dev --import-realm
-
-      - name: Wait for Keycloak
-        run: |
-          echo "Waiting for Keycloak..."
-          timeout 180 bash -c 'until curl -sf http://localhost:8090/realms/master/.well-known/openid-configuration > /dev/null 2>&1; do sleep 3; done'
-          echo "Waiting for grpc-test realm..."
-          timeout 60 bash -c 'until curl -sf http://localhost:8090/realms/grpc-test/.well-known/openid-configuration > /dev/null 2>&1; do sleep 3; done'
-          echo "Keycloak is ready"
-
-      - name: Initialize Vault PKI
-        run: |
-          docker run --rm --network host \
-            -e VAULT_ADDR=http://localhost:8200 \
-            -e VAULT_TOKEN=myroot \
-            -e VAULT_PKI_PATH=pki \
-            -e VAULT_PKI_ROLE=grpc-server \
-            -e CERT_TTL=8760h \
-            -e SERVER_CN=grpc-server \
-            -e CLIENT_CN=grpc-client \
-            -e "SERVER_ALT_NAMES=grpc-server,localhost" \
-            -e SERVER_IP_SANS=127.0.0.1 \
-            -v "${{ github.workspace }}/test/docker-compose/scripts:/scripts:ro" \
-            -v /tmp/grpc-test-certs:/certs \
-            hashicorp/vault:1.17 \
-            /bin/sh /scripts/init-vault.sh
-
-      - name: Initialize Keycloak
-        run: |
-          docker run --rm --network host \
-            -e KEYCLOAK_URL=http://localhost:8090 \
-            -e KEYCLOAK_ADMIN=admin \
-            -e KEYCLOAK_ADMIN_PASSWORD=admin \
-            -e REALM_NAME=grpc-test \
-            -e CLIENT_ID=grpc-server \
-            -e CLIENT_SECRET=grpc-server-secret \
-            -v "${{ github.workspace }}/test/docker-compose/scripts:/scripts:ro" \
-            hashicorp/vault:1.17 \
-            /bin/sh /scripts/init-keycloak.sh
-
       - name: Build and start gRPC server
         run: |
           go build -o bin/grpc-server ./cmd/server
@@ -424,7 +413,7 @@ jobs:
 
       - name: Upload logs artifact
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: e2e-logs
           path: /tmp/grpc-server.log
@@ -436,6 +425,16 @@ jobs:
           kill "$(cat /tmp/grpc-server.pid)" 2>/dev/null || true
           docker rm -f keycloak || true
 
+
+      - name: Collect Keycloak logs on failure
+        if: failure()
+        run: docker logs keycloak 2>&1 || true
+
+      - name: Stop Keycloak
+        if: always()
+        run: docker rm -f keycloak || true
+
+
   # ===========================================================================
   # Sequential Jobs: SonarCloud, Build, Docker
   # ===========================================================================
@@ -443,27 +442,27 @@ jobs:
   sonarcloud:
     name: SonarCloud Analysis
     runs-on: ubuntu-latest
-    needs: [lint, govulncheck, unit-tests, functional-tests, integration-tests, e2e-tests]
+    needs: [lint, govulncheck, unit-tests, functional-tests, integration-tests]
     permissions:
       contents: read
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           fetch-depth: 0  # Required for SonarCloud
 
       - name: Download unit coverage
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@fa0a91b85d4f404e444e00e005971372dc801d16 # v7.0.0
         with:
           name: coverage-unit
 
       - name: Download functional coverage
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@fa0a91b85d4f404e444e00e005971372dc801d16 # v7.0.0
         with:
           name: coverage-functional
 
       - name: SonarCloud Scan
-        uses: SonarSource/sonarcloud-github-action@master
+        uses: SonarSource/sonarqube-scan-action@a31c9398be7ace6bbfaf30c0bd5d415f843d45e9 # v7
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
@@ -476,6 +475,7 @@ jobs:
             -Dsonar.exclusions=**/*_test.go,**/vendor/**,**/test/**
             -Dsonar.tests=.
             -Dsonar.test.inclusions=**/*_test.go,**/test/**,**/pkg/**
+            -Dsonar.qualitygate.wait=${{ !startsWith(github.ref, 'refs/tags/') }}
 
   build:
     name: Build
@@ -486,10 +486,10 @@ jobs:
       contents: read
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
       - name: Set up Go
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@7a3fe6cf4cb3a834922a1244abfce67bcef6a0c5 # v6
         with:
           go-version: ${{ env.GO_VERSION }}
           cache: true
@@ -499,7 +499,7 @@ jobs:
           make build
 
       - name: Upload binary artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: server-binary
           path: bin/grpc-server
@@ -515,7 +515,7 @@ jobs:
       packages: read
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -559,12 +559,12 @@ jobs:
       version: ${{ steps.version.outputs.version }}
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           fetch-depth: 0
 
       - name: Setup Go
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@7a3fe6cf4cb3a834922a1244abfce67bcef6a0c5 # v6
         with:
           go-version: ${{ env.GO_VERSION }}
           cache: true
@@ -595,7 +595,7 @@ jobs:
           sha256sum grpc-server-darwin-arm64 > checksums-arm64.txt
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@a06a81a03ee405af7f2048a818ed3f03bbf83c7b # v2
         with:
           name: Release ${{ steps.version.outputs.version }}
           draft: false
@@ -610,7 +610,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Upload binary artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: server-binary
           path: bin/grpc-server*
@@ -633,16 +633,16 @@ jobs:
       image-tag: ${{ steps.meta.outputs.version }}
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
       - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
+        uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
 
       - name: Login to GitHub Container Registry
-        uses: docker/login-action@v3
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
         with:
           registry: ${{ env.DOCKER_REGISTRY }}
           username: ${{ github.actor }}
@@ -650,7 +650,7 @@ jobs:
 
       - name: Extract metadata
         id: meta
-        uses: docker/metadata-action@v5
+        uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5
         with:
           images: ${{ env.DOCKER_IMAGE }}
           tags: |
@@ -662,7 +662,7 @@ jobs:
 
       - name: Build and push Docker image
         id: build
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@263435318d21b8e681c14492fe198d362a7d2c83 # v6
         with:
           context: .
           platforms: linux/amd64,linux/arm64
@@ -685,7 +685,7 @@ jobs:
           upload-release-assets: false
 
       - name: Upload SBOM artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: sbom
           path: ./sbom.spdx.json
@@ -701,17 +701,17 @@ jobs:
       security-events: write
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
       - name: Login to GitHub Container Registry
-        uses: docker/login-action@v3
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
         with:
           registry: ${{ env.DOCKER_REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Run Trivy vulnerability scanner
-        uses: aquasecurity/trivy-action@master
+        uses: aquasecurity/trivy-action@b6643a29fecd7f34b3597bc6acb0a98b03d33ff8 # v0.31.0
         with:
           image-ref: '${{ env.DOCKER_IMAGE }}:${{ needs.docker-build-push.outputs.image-tag }}'
           format: 'sarif'
@@ -720,12 +720,12 @@ jobs:
           vuln-type: 'os,library'
 
       - name: Upload Trivy scan results to GitHub Security tab
-        uses: github/codeql-action/upload-sarif@v3
+        uses: github/codeql-action/upload-sarif@45cbd0c69e560cd9e7cd7f8c32362050c9b7ded2 # v4.32.2
         with:
           sarif_file: 'trivy-results.sarif'
 
       - name: Run Trivy vulnerability scanner (table output)
-        uses: aquasecurity/trivy-action@master
+        uses: aquasecurity/trivy-action@b6643a29fecd7f34b3597bc6acb0a98b03d33ff8 # v0.31.0
         with:
           image-ref: '${{ env.DOCKER_IMAGE }}:${{ needs.docker-build-push.outputs.image-tag }}'
           format: 'table'
@@ -734,9 +734,66 @@ jobs:
           exit-code: '1'
 
       - name: Upload Trivy results artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: always()
         with:
           name: trivy-results
           path: trivy-results.sarif
+          retention-days: 30
+
+  # ===========================================================================
+  # Tag-only Jobs: Helm Package & Release
+  # ===========================================================================
+
+  helm-package:
+    name: Helm Package & Release
+    runs-on: ubuntu-latest
+    needs: [sonarcloud]
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Set up Helm
+        uses: azure/setup-helm@v4
+        with:
+          version: ${{ env.HELM_VERSION }}
+
+      - name: Get version from tag
+        id: version
+        run: |
+          VERSION=${GITHUB_REF#refs/tags/v}
+          echo "version=${VERSION}" >> $GITHUB_OUTPUT
+          echo "Chart version: ${VERSION}"
+
+      - name: Update Chart.yaml version
+        run: |
+          sed -i "s/^version:.*/version: ${{ steps.version.outputs.version }}/" helm/grpc-server/Chart.yaml
+          sed -i "s/^appVersion:.*/appVersion: \"${{ steps.version.outputs.version }}\"/" helm/grpc-server/Chart.yaml
+          cat helm/grpc-server/Chart.yaml
+
+      - name: Lint Helm chart
+        run: helm lint helm/grpc-server
+
+      - name: Package Helm chart
+        run: |
+          mkdir -p bin
+          helm package helm/grpc-server -d bin
+          ls -la bin/
+
+      - name: Upload Helm chart to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: bin/grpc-server-*.tgz
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload Helm chart artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: helm-chart
+          path: bin/grpc-server-*.tgz
           retention-days: 30

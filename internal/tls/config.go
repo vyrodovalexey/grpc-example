@@ -1,3 +1,4 @@
+// Package tls provides TLS configuration, certificate loading, and Vault PKI integration.
 package tls
 
 import (
@@ -9,9 +10,9 @@ import (
 
 // clientAuthMap maps string client auth values to tls.ClientAuthType.
 var clientAuthMap = map[string]tls.ClientAuthType{
-	"none":    tls.NoClientCert,
-	"request": tls.RequestClientCert,
-	"require": tls.RequireAndVerifyClientCert,
+	config.ClientAuthNone:    tls.NoClientCert,
+	config.ClientAuthRequest: tls.RequestClientCert,
+	config.ClientAuthRequire: tls.RequireAndVerifyClientCert,
 }
 
 // BuildServerTLSConfig constructs a *tls.Config from the application's TLSConfig.
@@ -35,7 +36,7 @@ func BuildServerTLSConfig(cfg config.TLSConfig) (*tls.Config, error) {
 	tlsConfig.ClientAuth = clientAuth
 
 	// For mTLS mode, load CA cert pool for client certificate verification.
-	if cfg.Mode == "mtls" {
+	if cfg.Mode == config.TLSModeMTLS {
 		if cfg.CAPath == "" {
 			return nil, fmt.Errorf("CA certificate path is required for mTLS mode")
 		}
@@ -47,7 +48,7 @@ func BuildServerTLSConfig(cfg config.TLSConfig) (*tls.Config, error) {
 		tlsConfig.ClientCAs = caPool
 
 		// Override client auth to require and verify for mTLS if not explicitly set.
-		if cfg.ClientAuth == "none" {
+		if cfg.ClientAuth == config.ClientAuthNone {
 			tlsConfig.ClientAuth = tls.RequireAndVerifyClientCert
 		}
 	}

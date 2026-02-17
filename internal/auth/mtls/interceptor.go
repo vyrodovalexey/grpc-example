@@ -1,3 +1,4 @@
+// Package mtls provides mTLS authentication for gRPC servers.
 package mtls
 
 import (
@@ -66,22 +67,8 @@ func StreamInterceptor(cfg Config, logger *zap.Logger) grpc.StreamServerIntercep
 			zap.String("issuer", identity.Issuer),
 		)
 
-		wrapped := &authenticatedServerStream{
-			ServerStream: ss,
-			ctx:          auth.WithIdentity(ss.Context(), identity),
-		}
+		wrapped := auth.NewAuthenticatedServerStream(ss, auth.WithIdentity(ss.Context(), identity))
 
 		return handler(srv, wrapped)
 	}
-}
-
-// authenticatedServerStream wraps a grpc.ServerStream with an enriched context.
-type authenticatedServerStream struct {
-	grpc.ServerStream
-	ctx context.Context
-}
-
-// Context returns the enriched context with the authenticated identity.
-func (s *authenticatedServerStream) Context() context.Context {
-	return s.ctx
 }

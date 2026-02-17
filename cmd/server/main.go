@@ -9,6 +9,7 @@ import (
 	"os/signal"
 	"syscall"
 
+	"go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc"
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
@@ -17,8 +18,10 @@ import (
 	authoidc "github.com/vyrodovalexey/grpc-example/internal/auth/oidc"
 	"github.com/vyrodovalexey/grpc-example/internal/config"
 	"github.com/vyrodovalexey/grpc-example/internal/logger"
+	"github.com/vyrodovalexey/grpc-example/internal/metrics"
 	"github.com/vyrodovalexey/grpc-example/internal/server"
 	"github.com/vyrodovalexey/grpc-example/internal/service"
+	"github.com/vyrodovalexey/grpc-example/internal/telemetry"
 	tlspkg "github.com/vyrodovalexey/grpc-example/internal/tls"
 )
 
@@ -27,30 +30,51 @@ func main() {
 	cfg, err := config.Load()
 	if err != nil {
 		// Use basic logger for startup errors
-		basicLogger, _ := zap.NewProduction()
+		basicLogger := zap.Must(zap.NewProduction())
 		basicLogger.Fatal("failed to load configuration", zap.Error(err))
 	}
 
 	// Initialize logger
 	log, err := logger.InitLogger(cfg.LogLevel)
 	if err != nil {
-		basicLogger, _ := zap.NewProduction()
+		basicLogger := zap.Must(zap.NewProduction())
 		basicLogger.Fatal("failed to initialize logger", zap.Error(err))
 	}
-	defer logger.SyncLogger(log)
-
 	log.Info("starting gRPC test server", zap.String("config", cfg.String()))
 
+	if runErr := run(cfg, log); runErr != nil {
+		log.Fatal("server error", zap.Error(runErr))
+	}
+
+	log.Info("server shutdown complete")
+	logger.SyncLogger(log)
+}
+
+// run executes the main server lifecycle with proper resource cleanup via defers.
+func run(cfg *config.Config, log *zap.Logger) error {
 	// Setup signal handling
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
 
-	// Build server options (TLS, auth interceptors).
+	// Initialize OpenTelemetry tracer.
+	if initErr := telemetry.InitTracer(ctx, telemetry.Config{
+		Enabled:     cfg.OTEL.Enabled,
+		Endpoint:    cfg.OTEL.Endpoint,
+		ServiceName: cfg.OTEL.ServiceName,
+	}, log); initErr != nil {
+		return fmt.Errorf("initializing tracer: %w", initErr)
+	}
+	defer telemetry.ShutdownTracer(log)
+
+	// Start metrics HTTP server.
+	metricsSrv := metrics.NewServer(cfg.MetricsPort, log)
+	metricsSrv.Start()
+	defer metricsSrv.Shutdown()
+
+	// Build server options (TLS, auth interceptors, metrics, telemetry).
 	opts, err := buildServerOptions(ctx, cfg, log)
 	if err != nil {
-		log.Error("failed to build server options", zap.Error(err))
-		cancel()
-		return
+		return fmt.Errorf("building server options: %w", err)
 	}
 
 	// Create service
@@ -58,18 +82,13 @@ func main() {
 
 	// Create server with options
 	srv := server.NewServer(server.Config{
-		Address:         cfg.GRPCAddress(),
-		ShutdownTimeout: cfg.ShutdownTimeout,
+		Address:          cfg.GRPCAddress(),
+		ShutdownTimeout:  cfg.ShutdownTimeout,
+		EnableReflection: cfg.EnableReflection,
 	}, testService, log, opts...)
 
-	// Start server
-	if err := srv.Start(ctx); err != nil {
-		log.Error("server error", zap.Error(err))
-		cancel()
-		return
-	}
-
-	log.Info("server shutdown complete")
+	// Start server (blocks until shutdown)
+	return srv.Start(ctx)
 }
 
 // buildServerOptions constructs gRPC server options based on configuration.
@@ -77,6 +96,13 @@ func buildServerOptions(ctx context.Context, cfg *config.Config, log *zap.Logger
 	var opts []grpc.ServerOption
 	var unaryInterceptors []grpc.UnaryServerInterceptor
 	var streamInterceptors []grpc.StreamServerInterceptor
+
+	// Add OpenTelemetry stats handler for distributed tracing.
+	opts = append(opts, grpc.StatsHandler(otelgrpc.NewServerHandler()))
+
+	// Add Prometheus metrics interceptors.
+	unaryInterceptors = append(unaryInterceptors, metrics.UnaryServerInterceptor())
+	streamInterceptors = append(streamInterceptors, metrics.StreamServerInterceptor())
 
 	// Configure TLS if enabled.
 	if cfg.TLS.Enabled {
@@ -92,13 +118,13 @@ func buildServerOptions(ctx context.Context, cfg *config.Config, log *zap.Logger
 
 	// Configure auth interceptors based on auth mode.
 	switch cfg.Auth.Mode {
-	case "mtls":
+	case config.AuthModeMTLS:
 		mtlsCfg := mtls.Config{}
 		unaryInterceptors = append(unaryInterceptors, mtls.UnaryInterceptor(mtlsCfg, log))
 		streamInterceptors = append(streamInterceptors, mtls.StreamInterceptor(mtlsCfg, log))
 		log.Info("mTLS authentication enabled")
 
-	case "oidc":
+	case config.AuthModeOIDC:
 		oidcInterceptors, err := buildOIDCInterceptors(ctx, cfg, log)
 		if err != nil {
 			return nil, err
@@ -107,7 +133,7 @@ func buildServerOptions(ctx context.Context, cfg *config.Config, log *zap.Logger
 		streamInterceptors = append(streamInterceptors, oidcInterceptors.stream)
 		log.Info("OIDC authentication enabled")
 
-	case "both":
+	case config.AuthModeBoth:
 		mtlsCfg := mtls.Config{}
 		unaryInterceptors = append(unaryInterceptors, mtls.UnaryInterceptor(mtlsCfg, log))
 		streamInterceptors = append(streamInterceptors, mtls.StreamInterceptor(mtlsCfg, log))
@@ -124,13 +150,11 @@ func buildServerOptions(ctx context.Context, cfg *config.Config, log *zap.Logger
 		log.Info("no authentication enabled", zap.String("auth_mode", cfg.Auth.Mode))
 	}
 
-	// Chain interceptors if any are configured.
-	if len(unaryInterceptors) > 0 {
-		opts = append(opts, grpc.ChainUnaryInterceptor(unaryInterceptors...))
-	}
-	if len(streamInterceptors) > 0 {
-		opts = append(opts, grpc.ChainStreamInterceptor(streamInterceptors...))
-	}
+	// Chain interceptors.
+	opts = append(opts,
+		grpc.ChainUnaryInterceptor(unaryInterceptors...),
+		grpc.ChainStreamInterceptor(streamInterceptors...),
+	)
 
 	return opts, nil
 }
@@ -181,10 +205,10 @@ func buildVaultTLSOptions(
 		MinVersion:   cryptotls.VersionTLS12,
 	}
 
-	if cfg.TLS.Mode == "mtls" && caPEM != "" {
+	if cfg.TLS.Mode == config.TLSModeMTLS && caPEM != "" {
 		caPool := x509.NewCertPool()
 		if !caPool.AppendCertsFromPEM([]byte(caPEM)) {
-			return nil, fmt.Errorf("failed to parse CA certificate from vault")
+			return nil, fmt.Errorf("failed to parse CA certificate PEM from vault")
 		}
 		tlsConfig.ClientCAs = caPool
 		tlsConfig.ClientAuth = cryptotls.RequireAndVerifyClientCert

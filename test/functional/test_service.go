@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"math"
 	"math/rand/v2"
 	"time"
 
@@ -169,12 +170,35 @@ func (s *testServiceImpl) processBidirectionalRequest(
 func transformValue(value int64, operation string) (int64, error) {
 	switch operation {
 	case opDouble:
-		return value * 2, nil
+		result, err := safeMultiply(value, 2)
+		if err != nil {
+			return 0, status.Errorf(codes.OutOfRange, "double operation overflow: value %d", value)
+		}
+		return result, nil
 	case opSquare:
-		return value * value, nil
+		result, err := safeMultiply(value, value)
+		if err != nil {
+			return 0, status.Errorf(codes.OutOfRange, "square operation overflow: value %d", value)
+		}
+		return result, nil
 	case opNegate:
+		if value == math.MinInt64 {
+			return 0, status.Errorf(codes.OutOfRange, "negate operation overflow: value %d", value)
+		}
 		return -value, nil
 	default:
 		return 0, status.Errorf(codes.InvalidArgument, "unknown operation: %s (valid: double, square, negate)", operation)
 	}
+}
+
+// safeMultiply multiplies two int64 values and returns an error if the result overflows.
+func safeMultiply(a, b int64) (int64, error) {
+	if a == 0 || b == 0 {
+		return 0, nil
+	}
+	result := a * b
+	if (result/a != b) || (a == -1 && b == math.MinInt64) || (b == -1 && a == math.MinInt64) {
+		return 0, errors.New("integer overflow")
+	}
+	return result, nil
 }

@@ -5,31 +5,50 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
 )
 
 const (
+	// Auth mode constants.
+	AuthModeNone = "none"
+	AuthModeMTLS = "mtls"
+	AuthModeOIDC = "oidc"
+	AuthModeBoth = "both"
+
+	// TLS mode constants.
+	TLSModeNone = "none"
+	TLSModeTLS  = "tls"
+	TLSModeMTLS = "mtls"
+
+	// Client auth constants.
+	ClientAuthNone    = "none"
+	ClientAuthRequest = "request"
+	ClientAuthRequire = "require"
+
 	// Default configuration values.
-	defaultGRPCPort        = 50051
-	defaultMetricsPort     = 9090
-	defaultLogLevel        = "info"
-	defaultShutdownTimeout = 30 * time.Second
+	defaultGRPCPort         = 50051
+	defaultMetricsPort      = 9090
+	defaultLogLevel         = "info"
+	defaultShutdownTimeout  = 30 * time.Second
+	defaultEnableReflection = true
 
 	// Default TLS values.
-	defaultTLSMode     = "none"
-	defaultClientAuth  = "none"
+	defaultTLSMode     = TLSModeNone
+	defaultClientAuth  = ClientAuthNone
 	defaultVaultPKITTL = 24 * time.Hour
 
 	// Default auth mode.
-	defaultAuthMode = "none"
+	defaultAuthMode = AuthModeNone
 
 	// Environment variable names.
-	envGRPCPort        = "GRPC_PORT"
-	envMetricsPort     = "METRICS_PORT"
-	envLogLevel        = "LOG_LEVEL"
-	envShutdownTimeout = "SHUTDOWN_TIMEOUT"
+	envGRPCPort         = "GRPC_PORT"
+	envMetricsPort      = "METRICS_PORT"
+	envLogLevel         = "LOG_LEVEL"
+	envShutdownTimeout  = "SHUTDOWN_TIMEOUT"
+	envEnableReflection = "ENABLE_REFLECTION"
 
 	// TLS environment variable names.
 	envTLSEnabled    = "TLS_ENABLED"
@@ -40,12 +59,13 @@ const (
 	envTLSClientAuth = "TLS_CLIENT_AUTH"
 
 	// Vault PKI environment variable names.
-	envVaultEnabled = "VAULT_ENABLED"
-	envVaultAddr    = "VAULT_ADDR"
-	envVaultToken   = "VAULT_TOKEN"
-	envVaultPKIPath = "VAULT_PKI_PATH"
-	envVaultPKIRole = "VAULT_PKI_ROLE"
-	envVaultPKITTL  = "VAULT_PKI_TTL"
+	envVaultEnabled       = "VAULT_ENABLED"
+	envVaultAddr          = "VAULT_ADDR"
+	envVaultToken         = "VAULT_TOKEN"
+	envVaultTokenFilePath = "VAULT_TOKEN_FILE"
+	envVaultPKIPath       = "VAULT_PKI_PATH"
+	envVaultPKIRole       = "VAULT_PKI_ROLE"
+	envVaultPKITTL        = "VAULT_PKI_TTL"
 
 	// OIDC environment variable names.
 	envOIDCEnabled   = "OIDC_ENABLED"
@@ -55,6 +75,11 @@ const (
 
 	// Auth mode environment variable name.
 	envAuthMode = "AUTH_MODE"
+
+	// OTEL environment variable names.
+	envOTELEnabled     = "OTEL_ENABLED"
+	envOTELEndpoint    = "OTEL_EXPORTER_OTLP_ENDPOINT"
+	envOTELServiceName = "OTEL_SERVICE_NAME"
 
 	// Port range limits.
 	minPort = 1
@@ -69,12 +94,21 @@ var envOIDCClientSecret = "OIDC_CLIENT_SECRET" //nolint:gosec // env var name, n
 
 // Config holds the server configuration.
 type Config struct {
-	GRPCPort        int
-	MetricsPort     int
-	LogLevel        string
-	ShutdownTimeout time.Duration
-	TLS             TLSConfig
-	Auth            AuthConfig
+	GRPCPort         int
+	MetricsPort      int
+	LogLevel         string
+	ShutdownTimeout  time.Duration
+	EnableReflection bool
+	TLS              TLSConfig
+	Auth             AuthConfig
+	OTEL             OTELConfig
+}
+
+// OTELConfig holds OpenTelemetry configuration.
+type OTELConfig struct {
+	Enabled     bool
+	Endpoint    string
+	ServiceName string
 }
 
 // TLSConfig holds TLS-related configuration.
@@ -125,10 +159,11 @@ var (
 // Load reads configuration from environment variables with defaults.
 func Load() (*Config, error) {
 	cfg := &Config{
-		GRPCPort:        defaultGRPCPort,
-		MetricsPort:     defaultMetricsPort,
-		LogLevel:        defaultLogLevel,
-		ShutdownTimeout: defaultShutdownTimeout,
+		GRPCPort:         defaultGRPCPort,
+		MetricsPort:      defaultMetricsPort,
+		LogLevel:         defaultLogLevel,
+		ShutdownTimeout:  defaultShutdownTimeout,
+		EnableReflection: defaultEnableReflection,
 		TLS: TLSConfig{
 			Mode:        defaultTLSMode,
 			ClientAuth:  defaultClientAuth,
@@ -140,11 +175,13 @@ func Load() (*Config, error) {
 	}
 
 	if err := cfg.loadFromEnv(); err != nil {
-		return nil, fmt.Errorf("failed to load config from environment: %w", err)
+		return nil, fmt.Errorf("loading config from environment: %w", err)
 	}
 
+	cfg.applyDefaults()
+
 	if err := cfg.Validate(); err != nil {
-		return nil, fmt.Errorf("config validation failed: %w", err)
+		return nil, fmt.Errorf("validating config: %w", err)
 	}
 
 	return cfg, nil
@@ -168,7 +205,11 @@ func (c *Config) loadFromEnv() error {
 		return err
 	}
 
-	return c.loadAuthModeEnv()
+	if err := c.loadAuthModeEnv(); err != nil {
+		return err
+	}
+
+	return c.loadOTELEnv()
 }
 
 // loadBaseEnv loads base server configuration from environment variables.
@@ -199,6 +240,14 @@ func (c *Config) loadBaseEnv() error {
 			return fmt.Errorf("parsing %s: %w", envShutdownTimeout, err)
 		}
 		c.ShutdownTimeout = timeout
+	}
+
+	if val := os.Getenv(envEnableReflection); val != "" {
+		enabled, err := strconv.ParseBool(val)
+		if err != nil {
+			return fmt.Errorf("parsing %s: %w", envEnableReflection, err)
+		}
+		c.EnableReflection = enabled
 	}
 
 	return nil
@@ -253,6 +302,14 @@ func (c *Config) loadVaultEnv() error {
 
 	if val := os.Getenv(envVaultToken); val != "" {
 		c.TLS.VaultToken = val
+	} else if tokenFilePath := os.Getenv(envVaultTokenFilePath); tokenFilePath != "" {
+		cleanPath := filepath.Clean(tokenFilePath)
+		//nolint:gosec // trusted env var, cleaned path
+		tokenBytes, err := os.ReadFile(cleanPath)
+		if err != nil {
+			return fmt.Errorf("reading vault token file %s: %w", cleanPath, err)
+		}
+		c.TLS.VaultToken = strings.TrimSpace(string(tokenBytes))
 	}
 
 	if val := os.Getenv(envVaultPKIPath); val != "" {
@@ -304,12 +361,50 @@ func (c *Config) loadOIDCEnv() error {
 }
 
 // loadAuthModeEnv loads auth mode configuration from environment variables.
+// Returns error for consistency with other loadXxxEnv methods, though currently no parsing errors are possible.
 func (c *Config) loadAuthModeEnv() error {
 	if val := os.Getenv(envAuthMode); val != "" {
 		c.Auth.Mode = val
 	}
 
 	return nil
+}
+
+// loadOTELEnv loads OpenTelemetry configuration from environment variables.
+func (c *Config) loadOTELEnv() error {
+	if val := os.Getenv(envOTELEnabled); val != "" {
+		enabled, err := strconv.ParseBool(val)
+		if err != nil {
+			return fmt.Errorf("parsing %s: %w", envOTELEnabled, err)
+		}
+		c.OTEL.Enabled = enabled
+	}
+
+	if val := os.Getenv(envOTELEndpoint); val != "" {
+		c.OTEL.Endpoint = val
+	}
+
+	if val := os.Getenv(envOTELServiceName); val != "" {
+		c.OTEL.ServiceName = val
+	}
+
+	return nil
+}
+
+// applyDefaults sets default values for fields that are empty, ensuring backward compatibility.
+// This is called after loading from environment and before validation.
+func (c *Config) applyDefaults() {
+	if c.TLS.Mode == "" {
+		c.TLS.Mode = defaultTLSMode
+	}
+
+	if c.TLS.ClientAuth == "" {
+		c.TLS.ClientAuth = defaultClientAuth
+	}
+
+	if c.Auth.Mode == "" {
+		c.Auth.Mode = defaultAuthMode
+	}
 }
 
 // Validate checks if the configuration is valid.
@@ -356,16 +451,6 @@ func (c *Config) validateTLS() error {
 		return nil
 	}
 
-	// Treat empty TLS mode as "none" for backward compatibility.
-	if c.TLS.Mode == "" {
-		c.TLS.Mode = defaultTLSMode
-	}
-
-	// Treat empty client auth as "none" for backward compatibility.
-	if c.TLS.ClientAuth == "" {
-		c.TLS.ClientAuth = defaultClientAuth
-	}
-
 	if !isValidTLSMode(c.TLS.Mode) {
 		return ErrInvalidTLSMode
 	}
@@ -385,7 +470,7 @@ func (c *Config) validateTLS() error {
 	}
 
 	// For mTLS mode, CA path is required (unless Vault provides it).
-	if c.TLS.Mode == "mtls" && c.TLS.CAPath == "" && !c.TLS.VaultEnabled {
+	if c.TLS.Mode == TLSModeMTLS && c.TLS.CAPath == "" && !c.TLS.VaultEnabled {
 		return ErrTLSCARequired
 	}
 
@@ -394,11 +479,6 @@ func (c *Config) validateTLS() error {
 
 // validateAuth validates authentication configuration.
 func (c *Config) validateAuth() error {
-	// Treat empty auth mode as "none" for backward compatibility.
-	if c.Auth.Mode == "" {
-		c.Auth.Mode = defaultAuthMode
-	}
-
 	if !isValidAuthMode(c.Auth.Mode) {
 		return ErrInvalidAuthMode
 	}
@@ -420,44 +500,42 @@ func (c *Config) validateAuth() error {
 
 // isValidLogLevel checks if the log level is valid.
 func isValidLogLevel(level string) bool {
-	validLevels := map[string]bool{
-		"debug": true,
-		"info":  true,
-		"warn":  true,
-		"error": true,
+	switch level {
+	case "debug", "info", "warn", "error":
+		return true
+	default:
+		return false
 	}
-	return validLevels[level]
 }
 
 // isValidTLSMode checks if the TLS mode is valid.
 func isValidTLSMode(mode string) bool {
-	validModes := map[string]bool{
-		"none": true,
-		"tls":  true,
-		"mtls": true,
+	switch mode {
+	case TLSModeNone, TLSModeTLS, TLSModeMTLS:
+		return true
+	default:
+		return false
 	}
-	return validModes[mode]
 }
 
 // isValidClientAuth checks if the client auth mode is valid.
 func isValidClientAuth(auth string) bool {
-	validAuths := map[string]bool{
-		"none":    true,
-		"request": true,
-		"require": true,
+	switch auth {
+	case ClientAuthNone, ClientAuthRequest, ClientAuthRequire:
+		return true
+	default:
+		return false
 	}
-	return validAuths[auth]
 }
 
 // isValidAuthMode checks if the auth mode is valid.
 func isValidAuthMode(mode string) bool {
-	validModes := map[string]bool{
-		"none": true,
-		"mtls": true,
-		"oidc": true,
-		"both": true,
+	switch mode {
+	case AuthModeNone, AuthModeMTLS, AuthModeOIDC, AuthModeBoth:
+		return true
+	default:
+		return false
 	}
-	return validModes[mode]
 }
 
 // String returns a string representation of the config, hiding sensitive data.
@@ -474,7 +552,7 @@ func (c *Config) String() string {
 	if c.TLS.Enabled {
 		sb.WriteString(fmt.Sprintf(", TLS: enabled, TLSMode: %s", c.TLS.Mode))
 		if c.TLS.VaultEnabled {
-			sb.WriteString(fmt.Sprintf(", VaultAddr: %s, VaultToken: %s", c.TLS.VaultAddr, sensitiveValueMask))
+			sb.WriteString(fmt.Sprintf(", VaultAddr: %s, VaultToken: %s", sensitiveValueMask, sensitiveValueMask))
 		}
 	} else {
 		sb.WriteString(", TLS: disabled")
@@ -484,10 +562,16 @@ func (c *Config) String() string {
 
 	if c.Auth.OIDCEnabled {
 		sb.WriteString(fmt.Sprintf(
-			", OIDC: enabled, OIDCIssuer: %s, OIDCClientSecret: %s",
-			c.Auth.OIDCIssuerURL,
+			", OIDC: enabled, OIDCIssuer: %s, OIDCClientID: %s, OIDCClientSecret: %s",
+			sensitiveValueMask,
+			sensitiveValueMask,
 			sensitiveValueMask,
 		))
+	}
+
+	if c.OTEL.Enabled {
+		sb.WriteString(fmt.Sprintf(", OTEL: enabled, OTELEndpoint: %s, OTELServiceName: %s",
+			c.OTEL.Endpoint, c.OTEL.ServiceName))
 	}
 
 	sb.WriteString("}")
@@ -497,9 +581,4 @@ func (c *Config) String() string {
 // GRPCAddress returns the gRPC server address.
 func (c *Config) GRPCAddress() string {
 	return fmt.Sprintf(":%d", c.GRPCPort)
-}
-
-// MetricsAddress returns the metrics server address.
-func (c *Config) MetricsAddress() string {
-	return fmt.Sprintf(":%d", c.MetricsPort)
 }

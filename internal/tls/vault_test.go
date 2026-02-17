@@ -429,7 +429,7 @@ func TestVaultPKIClient_GetCACertificate(t *testing.T) {
 				_ = json.NewEncoder(w).Encode(resp)
 			},
 			wantErr:     true,
-			errContains: "failed to parse CA certificate from vault",
+			errContains: "parsing CA certificate from vault",
 		},
 	}
 

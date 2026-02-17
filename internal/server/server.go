@@ -28,8 +28,9 @@ type Server struct {
 
 // Config holds the server configuration.
 type Config struct {
-	Address         string
-	ShutdownTimeout time.Duration
+	Address          string
+	ShutdownTimeout  time.Duration
+	EnableReflection bool
 }
 
 // NewServer creates a new gRPC server instance.
@@ -48,8 +49,10 @@ func NewServer(
 	apiv1.RegisterTestServiceServer(grpcServer, testService)
 	healthpb.RegisterHealthServer(grpcServer, healthServer)
 
-	// Enable reflection for debugging
-	reflection.Register(grpcServer)
+	// Enable reflection only when configured (exposes API surface).
+	if cfg.EnableReflection {
+		reflection.Register(grpcServer)
+	}
 
 	return &Server{
 		grpcServer:      grpcServer,
@@ -65,7 +68,7 @@ func (s *Server) Start(ctx context.Context) error {
 	lc := net.ListenConfig{}
 	listener, err := lc.Listen(ctx, "tcp", s.address)
 	if err != nil {
-		return fmt.Errorf("failed to listen on %s: %w", s.address, err)
+		return fmt.Errorf("listening on %s: %w", s.address, err)
 	}
 
 	s.logger.Info("starting gRPC server", zap.String("address", s.address))

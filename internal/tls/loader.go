@@ -28,7 +28,7 @@ func LoadCACertPool(caPath string) (*x509.CertPool, error) {
 
 	pool := x509.NewCertPool()
 	if !pool.AppendCertsFromPEM(caPEM) {
-		return nil, fmt.Errorf("failed to parse CA certificate from %s: no valid PEM data found", caPath)
+		return nil, fmt.Errorf("parsing CA certificate from %s: no valid PEM data found", caPath)
 	}
 
 	return pool, nil

@@ -1,0 +1,20 @@
+# Chart.yaml - Helm chart metadata for gRPC Test Server
+apiVersion: v2
+name: grpc-server
+description: A Helm chart for deploying the gRPC test server with mTLS, OIDC, Vault PKI, and OpenTelemetry support
+type: application
+version: 0.1.0
+appVersion: "latest"
+keywords:
+  - grpc
+  - server
+  - mtls
+  - oidc
+  - vault
+  - opentelemetry
+home: https://github.com/vyrodovalexey/grpc-example
+sources:
+  - https://github.com/vyrodovalexey/grpc-example
+maintainers:
+  - name: alexey
+    url: https://github.com/vyrodovalexey
