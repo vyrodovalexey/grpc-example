@@ -475,6 +475,7 @@ jobs:
             -Dsonar.exclusions=**/*_test.go,**/vendor/**,**/test/**
             -Dsonar.tests=.
             -Dsonar.test.inclusions=**/*_test.go,**/test/**,**/pkg/**
+            -Dsonar.qualitygate.wait=${{ !startsWith(github.ref, 'refs/tags/') }}
 
   build:
     name: Build
