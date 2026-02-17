@@ -1,3 +1,4 @@
+// Package tls provides TLS configuration, certificate loading, and Vault PKI integration.
 package tls
 
 import (
@@ -6,19 +7,18 @@ import (
 	"crypto/x509"
 	"encoding/pem"
 	"fmt"
-	"math"
 	"time"
 
 	vault "github.com/hashicorp/vault/api"
 	"go.uber.org/zap"
 
 	"github.com/vyrodovalexey/grpc-example/internal/config"
+	"github.com/vyrodovalexey/grpc-example/internal/retry"
 )
 
 const (
-	vaultMaxRetries     = 5
-	vaultBaseRetryDelay = 500 * time.Millisecond
-	vaultMaxRetryDelay  = 30 * time.Second
+	// vaultClientTimeout is the timeout for Vault HTTP client operations.
+	vaultClientTimeout = 30 * time.Second
 )
 
 // VaultPKIClient defines the interface for Vault PKI operations.
@@ -46,6 +46,7 @@ func NewVaultPKIClient(cfg config.TLSConfig, logger *zap.Logger) (VaultPKIClient
 
 	vaultCfg := vault.DefaultConfig()
 	vaultCfg.Address = cfg.VaultAddr
+	vaultCfg.Timeout = vaultClientTimeout
 
 	client, err := vault.NewClient(vaultCfg)
 	if err != nil {
@@ -73,39 +74,14 @@ func (v *vaultPKIClient) IssueCertificate(ctx context.Context, commonName string
 	}
 
 	var secret *vault.Secret
-	var err error
 
-	for attempt := range vaultMaxRetries {
-		select {
-		case <-ctx.Done():
-			return tls.Certificate{}, "", fmt.Errorf("context cancelled during certificate issuance: %w", ctx.Err())
-		default:
-		}
-
-		secret, err = v.client.Logical().WriteWithContext(ctx, path, data)
-		if err == nil {
-			break
-		}
-
-		delay := calculateBackoff(attempt)
-		v.logger.Warn("vault PKI request failed, retrying",
-			zap.Int("attempt", attempt+1),
-			zap.Duration("retry_delay", delay),
-			zap.Error(err),
-		)
-
-		select {
-		case <-ctx.Done():
-			return tls.Certificate{}, "", fmt.Errorf("context cancelled during retry wait: %w", ctx.Err())
-		case <-time.After(delay):
-		}
-	}
-
+	err := retry.Do(ctx, retry.DefaultConfig(), v.logger, "vault PKI request", func() error {
+		var writeErr error
+		secret, writeErr = v.client.Logical().WriteWithContext(ctx, path, data)
+		return writeErr
+	})
 	if err != nil {
-		return tls.Certificate{}, "", fmt.Errorf(
-			"issuing certificate from vault after %d attempts: %w",
-			vaultMaxRetries, err,
-		)
+		return tls.Certificate{}, "", err
 	}
 
 	if secret == nil || secret.Data == nil {
@@ -120,36 +96,14 @@ func (v *vaultPKIClient) GetCACertificate(ctx context.Context) (*x509.CertPool, 
 	path := fmt.Sprintf("%s/cert/ca", v.pkiPath)
 
 	var secret *vault.Secret
-	var err error
 
-	for attempt := range vaultMaxRetries {
-		select {
-		case <-ctx.Done():
-			return nil, fmt.Errorf("context cancelled during CA retrieval: %w", ctx.Err())
-		default:
-		}
-
-		secret, err = v.client.Logical().ReadWithContext(ctx, path)
-		if err == nil {
-			break
-		}
-
-		delay := calculateBackoff(attempt)
-		v.logger.Warn("vault CA retrieval failed, retrying",
-			zap.Int("attempt", attempt+1),
-			zap.Duration("retry_delay", delay),
-			zap.Error(err),
-		)
-
-		select {
-		case <-ctx.Done():
-			return nil, fmt.Errorf("context cancelled during retry wait: %w", ctx.Err())
-		case <-time.After(delay):
-		}
-	}
-
+	err := retry.Do(ctx, retry.DefaultConfig(), v.logger, "vault CA retrieval", func() error {
+		var readErr error
+		secret, readErr = v.client.Logical().ReadWithContext(ctx, path)
+		return readErr
+	})
 	if err != nil {
-		return nil, fmt.Errorf("retrieving CA certificate from vault after %d attempts: %w", vaultMaxRetries, err)
+		return nil, err
 	}
 
 	if secret == nil || secret.Data == nil {
@@ -163,7 +117,7 @@ func (v *vaultPKIClient) GetCACertificate(ctx context.Context) (*x509.CertPool, 
 
 	pool := x509.NewCertPool()
 	if !pool.AppendCertsFromPEM([]byte(caPEM)) {
-		return nil, fmt.Errorf("failed to parse CA certificate from vault")
+		return nil, fmt.Errorf("parsing CA certificate from vault")
 	}
 
 	v.logger.Info("retrieved CA certificate from vault")
@@ -200,13 +154,4 @@ func (v *vaultPKIClient) parseCertificateResponse(secret *vault.Secret) (tls.Cer
 	)
 
 	return cert, caPEM, nil
-}
-
-// calculateBackoff calculates exponential backoff delay with a maximum cap.
-func calculateBackoff(attempt int) time.Duration {
-	delay := vaultBaseRetryDelay * time.Duration(math.Pow(2, float64(attempt)))
-	if delay > vaultMaxRetryDelay {
-		delay = vaultMaxRetryDelay
-	}
-	return delay
 }

@@ -1,0 +1,187 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "grpc-server.fullname" . }}
+  labels:
+    {{- include "grpc-server.labels" . | nindent 4 }}
+spec:
+  {{- if not .Values.autoscaling.enabled }}
+  replicas: {{ .Values.replicaCount }}
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "grpc-server.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      annotations:
+        {{- if .Values.metrics.enabled }}
+        prometheus.io/scrape: "true"
+        prometheus.io/port: {{ .Values.server.metricsPort | quote }}
+        prometheus.io/path: "/metrics"
+        {{- end }}
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      labels:
+        {{- include "grpc-server.labels" . | nindent 8 }}
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "grpc-server.serviceAccountName" . }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: {{ .Chart.Name }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          image: {{ include "grpc-server.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - name: grpc
+              containerPort: {{ .Values.server.port }}
+              protocol: TCP
+            - name: metrics
+              containerPort: {{ .Values.server.metricsPort }}
+              protocol: TCP
+          env:
+            # Base server configuration
+            - name: GRPC_PORT
+              value: {{ .Values.server.port | quote }}
+            - name: METRICS_PORT
+              value: {{ .Values.server.metricsPort | quote }}
+            - name: LOG_LEVEL
+              value: {{ .Values.server.logLevel | quote }}
+            - name: SHUTDOWN_TIMEOUT
+              value: {{ .Values.server.shutdownTimeout | quote }}
+            - name: ENABLE_REFLECTION
+              value: {{ .Values.server.enableReflection | quote }}
+            # TLS configuration
+            - name: TLS_ENABLED
+              value: {{ .Values.tls.enabled | quote }}
+            {{- if .Values.tls.enabled }}
+            - name: TLS_MODE
+              value: {{ .Values.tls.mode | quote }}
+            - name: TLS_CLIENT_AUTH
+              value: {{ .Values.tls.clientAuth | quote }}
+            {{- if not .Values.vault.enabled }}
+            - name: TLS_CERT_PATH
+              value: "/etc/tls/tls.crt"
+            - name: TLS_KEY_PATH
+              value: "/etc/tls/tls.key"
+            {{- if eq .Values.tls.mode "mtls" }}
+            - name: TLS_CA_PATH
+              value: "/etc/tls/ca.crt"
+            {{- end }}
+            {{- end }}
+            {{- end }}
+            # Vault PKI configuration
+            - name: VAULT_ENABLED
+              value: {{ .Values.vault.enabled | quote }}
+            {{- if .Values.vault.enabled }}
+            - name: VAULT_ADDR
+              value: {{ .Values.vault.addr | quote }}
+            - name: VAULT_TOKEN_FILE
+              value: "/etc/vault/token"
+            - name: VAULT_PKI_PATH
+              value: {{ .Values.vault.pkiPath | quote }}
+            - name: VAULT_PKI_ROLE
+              value: {{ .Values.vault.pkiRole | quote }}
+            - name: VAULT_PKI_TTL
+              value: {{ .Values.vault.pkiTTL | quote }}
+            {{- end }}
+            # Authentication configuration
+            - name: AUTH_MODE
+              value: {{ .Values.auth.mode | quote }}
+            # OIDC configuration
+            - name: OIDC_ENABLED
+              value: {{ .Values.oidc.enabled | quote }}
+            {{- if .Values.oidc.enabled }}
+            - name: OIDC_ISSUER_URL
+              value: {{ .Values.oidc.issuerURL | quote }}
+            - name: OIDC_CLIENT_ID
+              value: {{ .Values.oidc.clientID | quote }}
+            {{- if .Values.oidc.audience }}
+            - name: OIDC_AUDIENCE
+              value: {{ .Values.oidc.audience | quote }}
+            {{- end }}
+            - name: OIDC_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "grpc-server.oidcSecretName" . }}
+                  key: {{ .Values.oidc.clientSecretKey }}
+            {{- end }}
+            # OpenTelemetry configuration
+            - name: OTEL_ENABLED
+              value: {{ .Values.otel.enabled | quote }}
+            {{- if .Values.otel.enabled }}
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: {{ .Values.otel.endpoint | quote }}
+            - name: OTEL_SERVICE_NAME
+              value: {{ default (include "grpc-server.fullname" .) .Values.otel.serviceName | quote }}
+            {{- end }}
+            {{- with .Values.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: metrics
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: metrics
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 3
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            {{- if and .Values.tls.enabled (not .Values.vault.enabled) }}
+            - name: tls-certs
+              mountPath: /etc/tls
+              readOnly: true
+            {{- end }}
+            {{- if .Values.vault.enabled }}
+            - name: vault-token
+              mountPath: /etc/vault
+              readOnly: true
+            {{- end }}
+            {{- with .Values.extraVolumeMounts }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+      volumes:
+        {{- if and .Values.tls.enabled (not .Values.vault.enabled) }}
+        - name: tls-certs
+          secret:
+            secretName: {{ include "grpc-server.tlsSecretName" . }}
+        {{- end }}
+        {{- if .Values.vault.enabled }}
+        - name: vault-token
+          secret:
+            secretName: {{ include "grpc-server.vaultTokenSecretName" . }}
+        {{- end }}
+        {{- with .Values.extraVolumes }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

@@ -1,0 +1,197 @@
+# Default values for grpc-server.
+# This is a YAML-formatted file.
+# Declare variables to be passed into your templates.
+
+replicaCount: 1
+
+image:
+  repository: ghcr.io/vyrodovalexey/grpc-example
+  pullPolicy: IfNotPresent
+  # Overrides the image tag whose default is the chart appVersion.
+  tag: ""
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+serviceAccount:
+  # Specifies whether a service account should be created
+  create: true
+  # Automatically mount a ServiceAccount's API credentials?
+  automount: true
+  # Annotations to add to the service account
+  annotations: {}
+  # The name of the service account to use.
+  # If not set and create is true, a name is generated using the fullname template
+  name: ""
+
+podAnnotations: {}
+podLabels: {}
+
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 65534
+  fsGroup: 65534
+
+securityContext:
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop:
+      - ALL
+  readOnlyRootFilesystem: true
+
+# gRPC server configuration
+server:
+  # gRPC server port
+  port: 50051
+  # Metrics HTTP server port
+  metricsPort: 9090
+  # Log level: debug, info, warn, error
+  logLevel: info
+  # Graceful shutdown timeout
+  shutdownTimeout: 30s
+  # Enable gRPC reflection for debugging
+  enableReflection: true
+
+# TLS configuration
+tls:
+  # Enable TLS
+  enabled: false
+  # TLS mode: none, tls, mtls
+  mode: "none"
+  # Path to TLS certificate file (mounted from secret)
+  certPath: ""
+  # Path to TLS key file (mounted from secret)
+  keyPath: ""
+  # Path to CA certificate file (mounted from secret)
+  caPath: ""
+  # Client authentication mode: none, request, require
+  clientAuth: "none"
+  # Name of existing secret containing TLS certificates
+  # Secret should have keys: tls.crt, tls.key, ca.crt
+  existingSecret: ""
+
+# Vault PKI configuration for dynamic certificate management
+vault:
+  # Enable Vault PKI integration
+  enabled: false
+  # Vault server address
+  addr: ""
+  # Name of Kubernetes secret containing Vault token
+  tokenSecretName: ""
+  # Key in the secret containing the Vault token
+  tokenSecretKey: "token"
+  # Vault PKI secrets engine path
+  pkiPath: "pki"
+  # Vault PKI role name
+  pkiRole: "grpc-server"
+  # Certificate TTL
+  pkiTTL: "24h"
+
+# Authentication configuration
+auth:
+  # Authentication mode: none, mtls, oidc, both
+  mode: "none"
+
+# OIDC configuration for token-based authentication
+oidc:
+  # Enable OIDC authentication
+  enabled: false
+  # OIDC issuer URL (e.g., https://keycloak.example.com/realms/myrealm)
+  issuerURL: ""
+  # OIDC client ID
+  clientID: ""
+  # Name of Kubernetes secret containing OIDC client secret
+  clientSecretName: ""
+  # Key in the secret containing the OIDC client secret
+  clientSecretKey: "client-secret"
+  # Expected audience in the token
+  audience: ""
+
+# OpenTelemetry configuration for distributed tracing
+otel:
+  # Enable OpenTelemetry tracing
+  enabled: false
+  # OTLP exporter endpoint (e.g., http://otel-collector:4317)
+  endpoint: ""
+  # Service name for tracing
+  serviceName: ""
+
+service:
+  type: ClusterIP
+  # gRPC service port
+  grpcPort: 50051
+  # Metrics service port
+  metricsPort: 9090
+
+# Prometheus metrics configuration
+metrics:
+  # Enable metrics endpoint
+  enabled: true
+  # Prometheus ServiceMonitor configuration
+  serviceMonitor:
+    # Create ServiceMonitor resource (requires Prometheus Operator)
+    enabled: false
+    # Scrape interval
+    interval: 30s
+    # Additional labels for ServiceMonitor
+    labels: {}
+
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+    # kubernetes.io/ingress.class: nginx
+    # kubernetes.io/tls-acme: "true"
+  hosts:
+    - host: grpc-server.local
+      paths:
+        - path: /
+          pathType: Prefix
+  tls: []
+  #  - secretName: grpc-server-tls
+  #    hosts:
+  #      - grpc-server.local
+
+resources:
+  limits:
+    cpu: 500m
+    memory: 128Mi
+  requests:
+    cpu: 100m
+    memory: 64Mi
+
+autoscaling:
+  enabled: false
+  minReplicas: 1
+  maxReplicas: 10
+  targetCPUUtilizationPercentage: 80
+  # targetMemoryUtilizationPercentage: 80
+
+# Pod Disruption Budget
+podDisruptionBudget:
+  enabled: false
+  minAvailable: 1
+  # maxUnavailable: 1
+
+nodeSelector: {}
+
+tolerations: []
+
+affinity: {}
+
+# Extra environment variables to add to the container
+extraEnv: []
+  # - name: MY_VAR
+  #   value: "my-value"
+
+# Extra volume mounts to add to the container
+extraVolumeMounts: []
+  # - name: my-volume
+  #   mountPath: /path/to/mount
+
+# Extra volumes to add to the pod
+extraVolumes: []
+  # - name: my-volume
+  #   configMap:
+  #     name: my-configmap

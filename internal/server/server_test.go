@@ -3,6 +3,7 @@ package server_test
 
 import (
 	"context"
+	"fmt"
 	"net"
 	"testing"
 	"time"
@@ -26,15 +27,6 @@ func newTestLogger() *zap.Logger {
 	return zap.NewNop()
 }
 
-func getAvailablePort(t *testing.T) string {
-	t.Helper()
-	listener, err := net.Listen("tcp", ":0")
-	require.NoError(t, err)
-	port := listener.Addr().(*net.TCPAddr).Port
-	require.NoError(t, listener.Close())
-	return ":" + string(rune('0'+port/10000)) + string(rune('0'+(port/1000)%10)) + string(rune('0'+(port/100)%10)) + string(rune('0'+(port/10)%10)) + string(rune('0'+port%10))
-}
-
 func getAvailablePortInt(t *testing.T) int {
 	t.Helper()
 	listener, err := net.Listen("tcp", ":0")
@@ -45,19 +37,7 @@ func getAvailablePortInt(t *testing.T) int {
 }
 
 func formatPort(port int) string {
-	return ":" + intToString(port)
-}
-
-func intToString(n int) string {
-	if n == 0 {
-		return "0"
-	}
-	result := ""
-	for n > 0 {
-		result = string(rune('0'+n%10)) + result
-		n /= 10
-	}
-	return result
+	return fmt.Sprintf(":%d", port)
 }
 
 func TestNewServer(t *testing.T) {
@@ -251,7 +231,7 @@ func TestServer_StartOnUnavailablePort(t *testing.T) {
 
 	// Assert - should fail because port is occupied
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "failed to listen")
+	assert.Contains(t, err.Error(), "listening on")
 }
 
 func TestServer_GracefulShutdownWithConnections(t *testing.T) {
@@ -416,6 +396,42 @@ func TestServer_ZeroShutdownTimeout(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("server did not stop in time")
 	}
+}
+
+func TestServer_ReflectionEnabled(t *testing.T) {
+	// Arrange
+	port := getAvailablePortInt(t)
+	cfg := server.Config{
+		Address:          formatPort(port),
+		ShutdownTimeout:  5 * time.Second,
+		EnableReflection: true,
+	}
+	testService := &mockTestService{}
+	logger := newTestLogger()
+
+	// Act
+	srv := server.NewServer(cfg, testService, logger)
+
+	// Assert
+	require.NotNil(t, srv)
+}
+
+func TestServer_ReflectionDisabled(t *testing.T) {
+	// Arrange
+	port := getAvailablePortInt(t)
+	cfg := server.Config{
+		Address:          formatPort(port),
+		ShutdownTimeout:  5 * time.Second,
+		EnableReflection: false,
+	}
+	testService := &mockTestService{}
+	logger := newTestLogger()
+
+	// Act
+	srv := server.NewServer(cfg, testService, logger)
+
+	// Assert
+	require.NotNil(t, srv)
 }
 
 func TestServer_EmptyAddress(t *testing.T) {

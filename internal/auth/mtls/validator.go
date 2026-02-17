@@ -2,12 +2,15 @@ package mtls
 
 import (
 	"context"
+	"crypto/x509"
 	"fmt"
+	"slices"
 
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/peer"
 
 	"github.com/vyrodovalexey/grpc-example/internal/auth"
+	"github.com/vyrodovalexey/grpc-example/internal/config"
 )
 
 // ValidatePeerCertificate extracts and validates the peer certificate from the gRPC context.
@@ -29,25 +32,39 @@ func ValidatePeerCertificate(ctx context.Context, cfg Config) (*auth.Identity, e
 
 	peerCert := tlsInfo.State.VerifiedChains[0][0]
 
+	// If no restrictions are configured, allow all authenticated clients.
+	if !cfg.IsRestricted() {
+		return buildIdentity(peerCert), nil
+	}
+
 	// Validate against allowed subjects.
-	if len(cfg.AllowedSubjects) > 0 && !containsString(cfg.AllowedSubjects, peerCert.Subject.CommonName) {
+	if len(cfg.AllowedSubjects) > 0 && !slices.Contains(cfg.AllowedSubjects, peerCert.Subject.CommonName) {
 		return nil, fmt.Errorf("client subject %q not in allowed subjects", peerCert.Subject.CommonName)
 	}
 
 	// Validate against allowed SANs.
-	if len(cfg.AllowedSANs) > 0 && !hasMatchingSAN(cfg.AllowedSANs, peerCert.DNSNames) {
+	if len(cfg.AllowedSANs) > 0 && !slices.ContainsFunc(peerCert.DNSNames, func(san string) bool {
+		return slices.Contains(cfg.AllowedSANs, san)
+	}) {
 		return nil, fmt.Errorf("client SANs do not match allowed SANs")
 	}
 
 	// Validate against allowed OUs.
-	if len(cfg.AllowedOUs) > 0 && !hasMatchingOU(cfg.AllowedOUs, peerCert.Subject.OrganizationalUnit) {
+	if len(cfg.AllowedOUs) > 0 && !slices.ContainsFunc(peerCert.Subject.OrganizationalUnit, func(ou string) bool {
+		return slices.Contains(cfg.AllowedOUs, ou)
+	}) {
 		return nil, fmt.Errorf("client OU not in allowed OUs")
 	}
 
+	return buildIdentity(peerCert), nil
+}
+
+// buildIdentity constructs an auth.Identity from a verified peer certificate.
+func buildIdentity(peerCert *x509.Certificate) *auth.Identity {
 	identity := &auth.Identity{
 		Subject:    peerCert.Subject.CommonName,
 		Issuer:     peerCert.Issuer.CommonName,
-		AuthMethod: "mtls",
+		AuthMethod: config.AuthModeMTLS,
 		Claims:     make(map[string]string),
 	}
 
@@ -60,35 +77,5 @@ func ValidatePeerCertificate(ctx context.Context, cfg Config) (*auth.Identity, e
 	}
 	identity.Claims["serial"] = peerCert.SerialNumber.String()
 
-	return identity, nil
-}
-
-// containsString checks if a string slice contains a specific string.
-func containsString(slice []string, s string) bool {
-	for _, item := range slice {
-		if item == s {
-			return true
-		}
-	}
-	return false
-}
-
-// hasMatchingSAN checks if any of the peer's DNS names match the allowed SANs.
-func hasMatchingSAN(allowed, peerSANs []string) bool {
-	for _, san := range peerSANs {
-		if containsString(allowed, san) {
-			return true
-		}
-	}
-	return false
-}
-
-// hasMatchingOU checks if any of the peer's OUs match the allowed OUs.
-func hasMatchingOU(allowed, peerOUs []string) bool {
-	for _, ou := range peerOUs {
-		if containsString(allowed, ou) {
-			return true
-		}
-	}
-	return false
+	return identity
 }

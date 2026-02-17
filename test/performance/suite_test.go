@@ -243,6 +243,10 @@ func (p *benchProvider) Verifier() authoidc.TokenVerifier {
 	return p.verifier
 }
 
+func (p *benchProvider) Healthy(_ context.Context) bool {
+	return true
+}
+
 func setIDTokenClaims(token *gooidc.IDToken, claimsJSON []byte) {
 	v := reflect.ValueOf(token).Elem()
 	f := v.FieldByName("claims")

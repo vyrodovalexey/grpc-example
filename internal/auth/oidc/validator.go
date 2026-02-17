@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strings"
 
 	"google.golang.org/grpc/metadata"
@@ -36,7 +37,7 @@ func ValidateToken(
 	}
 
 	// Validate audience if configured.
-	if cfg.OIDCAudience != "" && !containsAudience(idToken.Audience, cfg.OIDCAudience) {
+	if cfg.OIDCAudience != "" && !slices.Contains(idToken.Audience, cfg.OIDCAudience) {
 		return nil, fmt.Errorf(
 			"token audience %v does not contain required audience %q",
 			idToken.Audience, cfg.OIDCAudience,
@@ -52,7 +53,7 @@ func ValidateToken(
 	identity := &auth.Identity{
 		Subject:    idToken.Subject,
 		Issuer:     idToken.Issuer,
-		AuthMethod: "oidc",
+		AuthMethod: config.AuthModeOIDC,
 		Claims:     stringClaims,
 	}
 
@@ -82,16 +83,6 @@ func extractBearerToken(ctx context.Context) (string, error) {
 	}
 
 	return token, nil
-}
-
-// containsAudience checks if the audience list contains the required audience.
-func containsAudience(audiences []string, required string) bool {
-	for _, aud := range audiences {
-		if aud == required {
-			return true
-		}
-	}
-	return false
 }
 
 // ValidateRequiredClaims validates that the token claims contain all required claims.

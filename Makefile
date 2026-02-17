@@ -41,7 +41,8 @@ PROTOC_GEN_GO_GRPC_VERSION := v1.5.1
 
 .PHONY: all proto build test test-unit test-functional test-coverage lint vulncheck docker-build docker-push clean help tools \
        test-env-up test-env-down test-env-logs test-env-clean test-env-status test-env-wait \
-       test-integration test-e2e test-performance generate-certs
+       test-integration test-e2e test-performance generate-certs \
+       helm-lint helm-template helm-package
 
 # Default target
 all: proto lint test build
@@ -217,6 +218,24 @@ generate-certs: ## Generate self-signed certificates for local testing (no Vault
 	@echo "==> Generating self-signed certificates..."
 	@./test/docker-compose/scripts/generate-certs.sh ./certs
 	@echo "==> Certificates generated in ./certs"
+
+##@ Helm
+
+helm-lint: ## Lint Helm chart
+	@echo "==> Linting Helm chart..."
+	helm lint helm/grpc-server
+	@echo "==> Helm lint complete"
+
+helm-template: ## Render Helm chart templates (dry-run)
+	@echo "==> Rendering Helm chart templates..."
+	helm template grpc-server helm/grpc-server
+	@echo "==> Helm template complete"
+
+helm-package: ## Package Helm chart
+	@echo "==> Packaging Helm chart..."
+	@mkdir -p $(BIN_DIR)
+	helm package helm/grpc-server -d $(BIN_DIR)
+	@echo "==> Helm package complete"
 
 ##@ Cleanup
 

@@ -51,13 +51,13 @@ COPY --from=builder /usr/share/zoneinfo /usr/share/zoneinfo
 COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
 
 # Set environment variables
-ENV GRPC_HOST=0.0.0.0 \
-    GRPC_PORT=50051 \
+ENV GRPC_PORT=50051 \
+    METRICS_PORT=9090 \
     LOG_LEVEL=info \
     SHUTDOWN_TIMEOUT=30s
 
-# Expose gRPC port
-EXPOSE 50051
+# Expose gRPC port and metrics port
+EXPOSE 50051 9090
 
 # Use non-root user (provided by distroless:nonroot)
 USER nonroot:nonroot

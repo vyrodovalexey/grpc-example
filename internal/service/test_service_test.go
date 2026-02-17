@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -135,11 +136,25 @@ func TestUnary(t *testing.T) {
 			errCode: codes.Canceled,
 		},
 		{
-			name:        "long message",
+			name:        "long message within limit",
 			request:     &apiv1.UnaryRequest{Message: "this is a very long message that should still work correctly"},
 			ctxFunc:     func() context.Context { return context.Background() },
 			wantErr:     false,
 			wantMessage: "this is a very long message that should still work correctly",
+		},
+		{
+			name:    "message exceeds max length",
+			request: &apiv1.UnaryRequest{Message: strings.Repeat("a", 4097)},
+			ctxFunc: func() context.Context { return context.Background() },
+			wantErr: true,
+			errCode: codes.InvalidArgument,
+		},
+		{
+			name:        "message at max length",
+			request:     &apiv1.UnaryRequest{Message: strings.Repeat("a", 4096)},
+			ctxFunc:     func() context.Context { return context.Background() },
+			wantErr:     false,
+			wantMessage: strings.Repeat("a", 4096),
 		},
 		{
 			name:        "special characters",
@@ -595,7 +610,7 @@ func TestTransformValueEdgeCases(t *testing.T) {
 			want:      1000000000000,
 		},
 		{
-			name:      "negate min int64",
+			name:      "negate min int64 + 1",
 			value:     -9223372036854775807,
 			operation: "negate",
 			want:      9223372036854775807,
@@ -623,6 +638,71 @@ func TestTransformValueEdgeCases(t *testing.T) {
 			require.NoError(t, err)
 			require.Len(t, stream.responses, 1)
 			assert.Equal(t, tt.want, stream.responses[0].GetTransformedValue())
+		})
+	}
+}
+
+func TestTransformValueOverflow(t *testing.T) {
+	tests := []struct {
+		name      string
+		value     int64
+		operation string
+		errCode   codes.Code
+	}{
+		{
+			name:      "double overflow - max int64",
+			value:     9223372036854775807, // math.MaxInt64
+			operation: "double",
+			errCode:   codes.OutOfRange,
+		},
+		{
+			name:      "double overflow - large negative",
+			value:     -4611686018427387905,
+			operation: "double",
+			errCode:   codes.OutOfRange,
+		},
+		{
+			name:      "square overflow - large value",
+			value:     3037000500, // sqrt(MaxInt64) ≈ 3037000499, so 3037000500^2 overflows
+			operation: "square",
+			errCode:   codes.OutOfRange,
+		},
+		{
+			name:      "square overflow - large negative",
+			value:     -3037000500,
+			operation: "square",
+			errCode:   codes.OutOfRange,
+		},
+		{
+			name:      "negate overflow - min int64",
+			value:     -9223372036854775808, // math.MinInt64
+			operation: "negate",
+			errCode:   codes.OutOfRange,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Arrange
+			logger := newTestLogger()
+			svc := service.NewTestService(logger)
+
+			stream := &mockBidirectionalStream{
+				ctx: context.Background(),
+				requests: []*apiv1.BidirectionalRequest{
+					{Value: tt.value, Operation: tt.operation},
+				},
+				responses: make([]*apiv1.BidirectionalResponse, 0),
+			}
+
+			// Act
+			err := svc.BidirectionalStream(stream)
+
+			// Assert
+			require.Error(t, err)
+			st, ok := status.FromError(err)
+			require.True(t, ok)
+			assert.Equal(t, tt.errCode, st.Code())
 		})
 	}
 }

@@ -441,6 +441,10 @@ func (m *mockProvider) Verifier() authoidc.TokenVerifier {
 	return m.verifier
 }
 
+func (m *mockProvider) Healthy(_ context.Context) bool {
+	return true
+}
+
 // setIDTokenClaims sets the unexported claims field on an IDToken for testing.
 func setIDTokenClaims(token *gooidc.IDToken, claimsJSON []byte) {
 	v := reflect.ValueOf(token).Elem()

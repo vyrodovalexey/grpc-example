@@ -15,13 +15,15 @@ import (
 // allEnvVars lists all config-related environment variables.
 var allEnvVars = []string{
 	"GRPC_PORT", "METRICS_PORT", "LOG_LEVEL", "SHUTDOWN_TIMEOUT",
+	"ENABLE_REFLECTION",
 	"TLS_ENABLED", "TLS_MODE", "TLS_CERT_PATH", "TLS_KEY_PATH",
 	"TLS_CA_PATH", "TLS_CLIENT_AUTH",
-	"VAULT_ENABLED", "VAULT_ADDR", "VAULT_TOKEN", "VAULT_PKI_PATH",
-	"VAULT_PKI_ROLE", "VAULT_PKI_TTL",
+	"VAULT_ENABLED", "VAULT_ADDR", "VAULT_TOKEN", "VAULT_TOKEN_FILE",
+	"VAULT_PKI_PATH", "VAULT_PKI_ROLE", "VAULT_PKI_TTL",
 	"OIDC_ENABLED", "OIDC_ISSUER_URL", "OIDC_CLIENT_ID",
 	"OIDC_CLIENT_SECRET", "OIDC_AUDIENCE",
 	"AUTH_MODE",
+	"OTEL_ENABLED", "OTEL_EXPORTER_OTLP_ENDPOINT", "OTEL_SERVICE_NAME",
 }
 
 // clearEnvVars clears all config-related environment variables.
@@ -57,6 +59,7 @@ func TestLoad(t *testing.T) {
 				assert.Equal(t, 9090, cfg.MetricsPort)
 				assert.Equal(t, "info", cfg.LogLevel)
 				assert.Equal(t, 30*time.Second, cfg.ShutdownTimeout)
+				assert.True(t, cfg.EnableReflection)
 				assert.False(t, cfg.TLS.Enabled)
 				assert.Equal(t, "none", cfg.TLS.Mode)
 				assert.Equal(t, "none", cfg.TLS.ClientAuth)
@@ -219,6 +222,34 @@ func TestLoad(t *testing.T) {
 				assert.Equal(t, 1, cfg.GRPCPort)
 				assert.Equal(t, 2, cfg.MetricsPort)
 			},
+		},
+		{
+			name: "reflection disabled via env",
+			envVars: map[string]string{
+				"ENABLE_REFLECTION": "false",
+			},
+			wantErr: false,
+			validate: func(t *testing.T, cfg *config.Config) {
+				assert.False(t, cfg.EnableReflection)
+			},
+		},
+		{
+			name: "reflection enabled via env",
+			envVars: map[string]string{
+				"ENABLE_REFLECTION": "true",
+			},
+			wantErr: false,
+			validate: func(t *testing.T, cfg *config.Config) {
+				assert.True(t, cfg.EnableReflection)
+			},
+		},
+		{
+			name: "invalid ENABLE_REFLECTION value",
+			envVars: map[string]string{
+				"ENABLE_REFLECTION": "notabool",
+			},
+			wantErr:     true,
+			errContains: "parsing ENABLE_REFLECTION",
 		},
 		{
 			name: "boundary port values - max valid",
@@ -514,6 +545,68 @@ func TestLoad_VaultConfig(t *testing.T) {
 	}
 }
 
+func TestLoad_VaultTokenFile(t *testing.T) {
+	t.Run("reads token from file", func(t *testing.T) {
+		// Arrange
+		clearEnvVars(t)
+		t.Cleanup(func() { clearEnvVars(t) })
+
+		tokenFile := t.TempDir() + "/vault-token"
+		require.NoError(t, os.WriteFile(tokenFile, []byte("s.file-token\n"), 0o600))
+
+		setEnvVars(t, map[string]string{
+			"VAULT_ENABLED":    "true",
+			"VAULT_TOKEN_FILE": tokenFile,
+		})
+
+		// Act
+		cfg, err := config.Load()
+
+		// Assert
+		require.NoError(t, err)
+		assert.Equal(t, "s.file-token", cfg.TLS.VaultToken)
+	})
+
+	t.Run("env token takes precedence over file", func(t *testing.T) {
+		// Arrange
+		clearEnvVars(t)
+		t.Cleanup(func() { clearEnvVars(t) })
+
+		tokenFile := t.TempDir() + "/vault-token"
+		require.NoError(t, os.WriteFile(tokenFile, []byte("s.file-token"), 0o600))
+
+		setEnvVars(t, map[string]string{
+			"VAULT_ENABLED":    "true",
+			"VAULT_TOKEN":      "s.env-token",
+			"VAULT_TOKEN_FILE": tokenFile,
+		})
+
+		// Act
+		cfg, err := config.Load()
+
+		// Assert
+		require.NoError(t, err)
+		assert.Equal(t, "s.env-token", cfg.TLS.VaultToken)
+	})
+
+	t.Run("error on nonexistent token file", func(t *testing.T) {
+		// Arrange
+		clearEnvVars(t)
+		t.Cleanup(func() { clearEnvVars(t) })
+
+		setEnvVars(t, map[string]string{
+			"VAULT_TOKEN_FILE": "/nonexistent/path/token",
+		})
+
+		// Act
+		_, err := config.Load()
+
+		// Assert
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "reading vault token file")
+	})
+}
+
 func TestLoad_OIDCConfig(t *testing.T) {
 	tests := []struct {
 		name        string
@@ -737,7 +830,7 @@ func TestConfig_String(t *testing.T) {
 			},
 		},
 		{
-			name: "TLS enabled with Vault - token masked",
+			name: "TLS enabled with Vault - sensitive values masked",
 			config: &config.Config{
 				GRPCPort:        50051,
 				MetricsPort:     9090,
@@ -757,15 +850,16 @@ func TestConfig_String(t *testing.T) {
 			contains: []string{
 				"TLS: enabled",
 				"TLSMode: mtls",
-				"VaultAddr: http://vault:8200",
+				"VaultAddr: ****",
 				"VaultToken: ****",
 			},
 			notContains: []string{
 				"s.super-secret-token",
+				"http://vault:8200",
 			},
 		},
 		{
-			name: "OIDC enabled - client secret masked",
+			name: "OIDC enabled - all sensitive values masked",
 			config: &config.Config{
 				GRPCPort:        50051,
 				MetricsPort:     9090,
@@ -775,17 +869,21 @@ func TestConfig_String(t *testing.T) {
 					Mode:             "oidc",
 					OIDCEnabled:      true,
 					OIDCIssuerURL:    "https://issuer.example.com",
+					OIDCClientID:     "my-client-id",
 					OIDCClientSecret: "super-secret",
 				},
 			},
 			contains: []string{
 				"AuthMode: oidc",
 				"OIDC: enabled",
-				"OIDCIssuer: https://issuer.example.com",
+				"OIDCIssuer: ****",
+				"OIDCClientID: ****",
 				"OIDCClientSecret: ****",
 			},
 			notContains: []string{
 				"super-secret",
+				"https://issuer.example.com",
+				"my-client-id",
 			},
 		},
 		{
@@ -837,6 +935,7 @@ func TestConfig_Validate(t *testing.T) {
 				MetricsPort:     9090,
 				LogLevel:        "info",
 				ShutdownTimeout: 30 * time.Second,
+				Auth:            config.AuthConfig{Mode: "none"},
 			},
 			wantErr: nil,
 		},
@@ -934,6 +1033,7 @@ func TestConfig_Validate(t *testing.T) {
 					KeyPath:    "/path/to/key.pem",
 					ClientAuth: "none",
 				},
+				Auth: config.AuthConfig{Mode: "none"},
 			},
 			wantErr: nil,
 		},
@@ -1036,6 +1136,7 @@ func TestConfig_Validate(t *testing.T) {
 					VaultEnabled: true,
 					ClientAuth:   "none",
 				},
+				Auth: config.AuthConfig{Mode: "none"},
 			},
 			wantErr: nil,
 		},
@@ -1108,11 +1209,12 @@ func TestConfig_Validate(t *testing.T) {
 				TLS: config.TLSConfig{
 					Enabled: false,
 				},
+				Auth: config.AuthConfig{Mode: "none"},
 			},
 			wantErr: nil,
 		},
 		{
-			name: "TLS enabled - empty mode defaults to none",
+			name: "TLS enabled - empty mode is invalid without applyDefaults",
 			config: &config.Config{
 				GRPCPort:        50051,
 				MetricsPort:     9090,
@@ -1126,10 +1228,10 @@ func TestConfig_Validate(t *testing.T) {
 					ClientAuth: "none",
 				},
 			},
-			wantErr: nil,
+			wantErr: config.ErrInvalidTLSMode,
 		},
 		{
-			name: "TLS enabled - empty client auth defaults to none",
+			name: "TLS enabled - empty client auth is invalid without applyDefaults",
 			config: &config.Config{
 				GRPCPort:        50051,
 				MetricsPort:     9090,
@@ -1143,10 +1245,10 @@ func TestConfig_Validate(t *testing.T) {
 					ClientAuth: "",
 				},
 			},
-			wantErr: nil,
+			wantErr: config.ErrInvalidClientAuth,
 		},
 		{
-			name: "empty auth mode defaults to none",
+			name: "empty auth mode is invalid without applyDefaults",
 			config: &config.Config{
 				GRPCPort:        50051,
 				MetricsPort:     9090,
@@ -1156,7 +1258,7 @@ func TestConfig_Validate(t *testing.T) {
 					Mode: "",
 				},
 			},
-			wantErr: nil,
+			wantErr: config.ErrInvalidAuthMode,
 		},
 	}
 
@@ -1201,38 +1303,6 @@ func TestConfig_GRPCAddress(t *testing.T) {
 
 			// Act
 			result := cfg.GRPCAddress()
-
-			// Assert
-			assert.Equal(t, tt.want, result)
-		})
-	}
-}
-
-func TestConfig_MetricsAddress(t *testing.T) {
-	tests := []struct {
-		name        string
-		metricsPort int
-		want        string
-	}{
-		{
-			name:        "default port",
-			metricsPort: 9090,
-			want:        ":9090",
-		},
-		{
-			name:        "custom port",
-			metricsPort: 9091,
-			want:        ":9091",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			// Arrange
-			cfg := &config.Config{MetricsPort: tt.metricsPort}
-
-			// Act
-			result := cfg.MetricsAddress()
 
 			// Assert
 			assert.Equal(t, tt.want, result)
@@ -1368,6 +1438,7 @@ func TestValidTLSModes(t *testing.T) {
 					CAPath:     "/path/to/ca.pem",
 					ClientAuth: "none",
 				},
+				Auth: config.AuthConfig{Mode: "none"},
 			}
 
 			// Act
@@ -1397,6 +1468,7 @@ func TestValidClientAuthModes(t *testing.T) {
 					KeyPath:    "/path/to/key.pem",
 					ClientAuth: mode,
 				},
+				Auth: config.AuthConfig{Mode: "none"},
 			}
 
 			// Act
@@ -1431,4 +1503,162 @@ func TestValidAuthModes(t *testing.T) {
 			require.NoError(t, err)
 		})
 	}
+}
+
+func TestLoad_OTELConfig(t *testing.T) {
+	tests := []struct {
+		name        string
+		envVars     map[string]string
+		wantErr     bool
+		errContains string
+		validate    func(t *testing.T, cfg *config.Config)
+	}{
+		{
+			name: "OTEL_ENABLED=true sets cfg.OTEL.Enabled",
+			envVars: map[string]string{
+				"OTEL_ENABLED": "true",
+			},
+			wantErr: false,
+			validate: func(t *testing.T, cfg *config.Config) {
+				assert.True(t, cfg.OTEL.Enabled)
+			},
+		},
+		{
+			name: "OTEL_ENABLED=false sets cfg.OTEL.Enabled to false",
+			envVars: map[string]string{
+				"OTEL_ENABLED": "false",
+			},
+			wantErr: false,
+			validate: func(t *testing.T, cfg *config.Config) {
+				assert.False(t, cfg.OTEL.Enabled)
+			},
+		},
+		{
+			name: "OTEL_EXPORTER_OTLP_ENDPOINT sets endpoint",
+			envVars: map[string]string{
+				"OTEL_EXPORTER_OTLP_ENDPOINT": "localhost:4318",
+			},
+			wantErr: false,
+			validate: func(t *testing.T, cfg *config.Config) {
+				assert.Equal(t, "localhost:4318", cfg.OTEL.Endpoint)
+			},
+		},
+		{
+			name: "OTEL_SERVICE_NAME sets service name",
+			envVars: map[string]string{
+				"OTEL_SERVICE_NAME": "my-service",
+			},
+			wantErr: false,
+			validate: func(t *testing.T, cfg *config.Config) {
+				assert.Equal(t, "my-service", cfg.OTEL.ServiceName)
+			},
+		},
+		{
+			name: "OTEL_ENABLED=invalid returns parse error",
+			envVars: map[string]string{
+				"OTEL_ENABLED": "invalid",
+			},
+			wantErr:     true,
+			errContains: "parsing OTEL_ENABLED",
+		},
+		{
+			name: "all OTEL env vars set",
+			envVars: map[string]string{
+				"OTEL_ENABLED":                "true",
+				"OTEL_EXPORTER_OTLP_ENDPOINT": "collector.example.com:4318",
+				"OTEL_SERVICE_NAME":           "my-grpc-service",
+			},
+			wantErr: false,
+			validate: func(t *testing.T, cfg *config.Config) {
+				assert.True(t, cfg.OTEL.Enabled)
+				assert.Equal(t, "collector.example.com:4318", cfg.OTEL.Endpoint)
+				assert.Equal(t, "my-grpc-service", cfg.OTEL.ServiceName)
+			},
+		},
+		{
+			name:    "OTEL defaults when no env vars set",
+			envVars: map[string]string{},
+			wantErr: false,
+			validate: func(t *testing.T, cfg *config.Config) {
+				assert.False(t, cfg.OTEL.Enabled)
+				assert.Empty(t, cfg.OTEL.Endpoint)
+				assert.Empty(t, cfg.OTEL.ServiceName)
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Arrange
+			clearEnvVars(t)
+			if len(tt.envVars) > 0 {
+				setEnvVars(t, tt.envVars)
+			}
+			t.Cleanup(func() { clearEnvVars(t) })
+
+			// Act
+			cfg, err := config.Load()
+
+			// Assert
+			if tt.wantErr {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tt.errContains)
+			} else {
+				require.NoError(t, err)
+				require.NotNil(t, cfg)
+				if tt.validate != nil {
+					tt.validate(t, cfg)
+				}
+			}
+		})
+	}
+}
+
+func TestConfig_String_OTELEnabled(t *testing.T) {
+	// Arrange
+	cfg := &config.Config{
+		GRPCPort:        50051,
+		MetricsPort:     9090,
+		LogLevel:        "info",
+		ShutdownTimeout: 30 * time.Second,
+		Auth: config.AuthConfig{
+			Mode: "none",
+		},
+		OTEL: config.OTELConfig{
+			Enabled:     true,
+			Endpoint:    "localhost:4318",
+			ServiceName: "test-service",
+		},
+	}
+
+	// Act
+	result := cfg.String()
+
+	// Assert
+	assert.Contains(t, result, "OTEL: enabled")
+	assert.Contains(t, result, "OTELEndpoint: localhost:4318")
+	assert.Contains(t, result, "OTELServiceName: test-service")
+}
+
+func TestConfig_String_OTELDisabled(t *testing.T) {
+	// Arrange
+	cfg := &config.Config{
+		GRPCPort:        50051,
+		MetricsPort:     9090,
+		LogLevel:        "info",
+		ShutdownTimeout: 30 * time.Second,
+		Auth: config.AuthConfig{
+			Mode: "none",
+		},
+		OTEL: config.OTELConfig{
+			Enabled: false,
+		},
+	}
+
+	// Act
+	result := cfg.String()
+
+	// Assert
+	assert.NotContains(t, result, "OTEL: enabled")
+	assert.NotContains(t, result, "OTELEndpoint")
 }

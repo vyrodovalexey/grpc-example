@@ -1,3 +1,4 @@
+// Package auth provides common authentication interfaces and types for the gRPC server.
 package auth
 
 import "context"
