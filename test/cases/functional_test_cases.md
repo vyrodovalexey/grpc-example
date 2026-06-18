@@ -3,6 +3,24 @@
 ## Overview
 This document describes the functional test cases for the gRPC Test Server.
 
+## Authentication Method Coverage Axis
+
+Every transport/RPC behaviour is validated across **all four authentication
+modes**. Tests use the `AUTH_MODE` matrix below. New observability tests
+(section 8) and the auth-mode table (section 7) MUST exercise each mode.
+
+| Auth Mode | TLS | Client Cert (Vault PKI / mTLS) | Bearer Token (OIDC / Keycloak) | Notes |
+|-----------|-----|--------------------------------|--------------------------------|-------|
+| `none` | none | not required | not required | Insecure backward-compat baseline |
+| `mtls` | mtls | required & validated | not required | Client cert subject checked |
+| `oidc` | tls (server) | not required | required & validated | Token signature/issuer/audience checked |
+| `both` | mtls | required & validated | required & validated | Cert AND token must both pass |
+
+**Coverage rule:** each unary, server-stream, and bidi-stream happy path is
+asserted under `none`, `mtls`, `oidc`, and `both`. Negative auth cases
+(missing/invalid cert, missing/invalid token) are asserted under the modes
+where that credential is required.
+
 ## Test Categories
 
 ### 1. Unary RPC Tests (`unary_test.go`)
@@ -108,8 +126,64 @@ This document describes the functional test cases for the gRPC Test Server.
 | TestFunctional_AuthModes_OIDCMode | OIDC with valid bearer token | Request succeeds |
 | TestFunctional_AuthModes_CombinedMTLSAndOIDC | Both mTLS cert and OIDC token | Request succeeds |
 | TestFunctional_AuthModes_CombinedMTLSAndOIDC_MissingToken | mTLS cert but no OIDC token | Unauthenticated error |
+| TestFunctional_AuthModes_CombinedMTLSAndOIDC_MissingCert | OIDC token but no client cert | Unavailable error (TLS handshake fails) |
 | TestFunctional_AuthModes_InsecureToTLSUpgrade | Insecure client to TLS server | Unavailable error |
+| TestFunctional_AuthModes_AllModes_Unary | Unary RPC under none/mtls/oidc/both | Request succeeds in each mode |
+| TestFunctional_AuthModes_AllModes_ServerStream | Server stream under none/mtls/oidc/both | Stream completes in each mode |
+| TestFunctional_AuthModes_AllModes_BidiStream | Bidi stream under none/mtls/oidc/both | Exchange succeeds in each mode |
 | TestFunctional_AuthModes_TableDriven | All auth modes in table-driven format | Each mode works correctly |
+
+**Acceptance criteria (auth modes):**
+- Every RPC type (unary, server-stream, bidi-stream) passes under all four
+  modes: `none`, `mtls`, `oidc`, `both`.
+- `none` mode keeps working with no TLS and no credentials (backward compat).
+- `both` mode requires BOTH a valid client cert AND a valid bearer token;
+  removing either credential yields the appropriate failure.
+
+### 8. Metrics & Observability Tests (`metrics_test.go`)
+
+These tests validate the additive Prometheus metrics and the gated OTLP
+metrics export. Existing metrics (`grpc_server_started_total`,
+`grpc_server_handled_total`, `grpc_server_handling_seconds`,
+`auth_attempts_total`) MUST remain unchanged in name and labels.
+
+#### Prometheus metrics
+
+| Test Case | Description | Expected Result |
+|-----------|-------------|-----------------|
+| TestFunctional_Metrics_ExistingMetricsUnchanged | Gather default registry | `grpc_server_started_total`, `grpc_server_handled_total`, `grpc_server_handling_seconds`, `auth_attempts_total` present with original labels |
+| TestFunctional_Metrics_StartedAndHandledIncrement | Issue N unary RPCs | `started_total` and `handled_total{grpc_code="OK"}` increase by N |
+| TestFunctional_Metrics_InFlightGaugeReturnsToZero | Issue balanced RPCs (incl. streaming) | `grpc_server_in_flight_requests` returns to 0 after completion |
+| TestFunctional_Metrics_MsgSentReceivedCounters | Server-stream of K msgs, bidi of M msgs | `grpc_server_msg_sent_total` / `grpc_server_msg_received_total` reflect message counts |
+| TestFunctional_Metrics_AuthAttempts_MTLS | Valid + invalid mTLS attempt | `auth_attempts_total{auth_type="mtls",result="success"}` and `{result="failure"}` increment |
+| TestFunctional_Metrics_AuthAttempts_OIDC | Valid + invalid OIDC attempt | `auth_attempts_total{auth_type="oidc",result="success"}` and `{result="failure"}` increment |
+| TestFunctional_Metrics_AuthAttempts_None | Insecure mode requests | No `auth_attempts_total` increments (no auth performed) |
+| TestFunctional_Metrics_AuthAttempts_Both | `both` mode valid + invalid | Auth attempts recorded for the executed method(s) |
+| TestFunctional_Metrics_AuthLatencyHistogram | Auth attempt under mtls/oidc | `auth_attempt_duration_seconds` observed (count increases) |
+| TestFunctional_Metrics_EndpointServesMetrics | GET `/metrics` | HTTP 200; body contains all expected metric names |
+| TestFunctional_Metrics_HealthzEndpoint | GET `/healthz` | HTTP 200 "ok" |
+
+#### OTLP metrics export (gated)
+
+| Test Case | Description | Expected Result |
+|-----------|-------------|-----------------|
+| TestFunctional_OTLP_DisabledIsNoOp | OTEL disabled / empty endpoint | No meter provider set; no error; `/metrics` still authoritative |
+| TestFunctional_OTLP_EnabledInitNoError | OTEL enabled with endpoint | Meter provider initialized without error |
+| TestFunctional_OTLP_PrometheusUnaffected | OTEL enabled | `/metrics` output identical in shape to OTLP-off run (no double registration) |
+| TestFunctional_OTLP_ShutdownNoPanic | Init then shutdown meter+tracer | Graceful shutdown, no panic, flush logged |
+
+**Acceptance criteria (metrics & observability):**
+- New metrics are additive; the four pre-existing metrics keep identical
+  names, label sets, and help text.
+- In-flight gauge is balanced (returns to 0) over a complete request
+  lifecycle including streaming and error paths.
+- `auth_attempts_total` is incremented at every auth decision for `mtls`
+  and `oidc` (and within `both`); `none` records no auth attempts.
+- OTLP metrics export is a pure no-op when disabled or endpoint is empty;
+  when enabled it must not interfere with the Prometheus pull endpoint,
+  which remains authoritative.
+- Assertions use gathered-registry deltas (before/after) rather than
+  absolute counts, to remain stable under parallel test execution.
 
 ## Test Execution
 
@@ -128,6 +202,12 @@ go test -v -race -tags=functional ./test/functional/... -run TestFunctional_OIDC
 
 # Auth mode tests only
 go test -v -race -tags=functional ./test/functional/... -run TestFunctional_AuthModes
+
+# Metrics & observability tests only
+go test -v -race -tags=functional ./test/functional/... -run TestFunctional_Metrics
+
+# OTLP metrics export tests only
+go test -v -race -tags=functional ./test/functional/... -run TestFunctional_OTLP
 ```
 
 ### Run Integration Tests (requires docker-compose)
@@ -173,6 +253,14 @@ go tool cover -html=coverage.out
 - `oidcTestEnv` - Complete OIDC test environment (mock provider, server)
 - `mockTokenVerifier` / `mockProvider` - Mock OIDC components
 - `contextWithBearerToken` - Helper to add bearer tokens to gRPC context
+
+### Metrics / Observability Test Helpers
+- Gather-and-diff helper around `prometheus.DefaultGatherer.Gather()` to
+  assert metric deltas independent of other parallel tests.
+- Helper to start the metrics HTTP server on a random port and scrape
+  `/metrics` and `/healthz`.
+- OTLP test helper using a manual/in-memory metric reader (or a stub
+  collector endpoint) to assert export init/shutdown without a live backend.
 
 ## Test Tags
 - `functional` - Functional tests (no external dependencies)

@@ -56,15 +56,24 @@ func run(cfg *config.Config, log *zap.Logger) error {
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
 
-	// Initialize OpenTelemetry tracer.
-	if initErr := telemetry.InitTracer(ctx, telemetry.Config{
+	// Build the shared OpenTelemetry configuration.
+	otelCfg := telemetry.Config{
 		Enabled:     cfg.OTEL.Enabled,
 		Endpoint:    cfg.OTEL.Endpoint,
 		ServiceName: cfg.OTEL.ServiceName,
-	}, log); initErr != nil {
+	}
+
+	// Initialize OpenTelemetry tracer.
+	if initErr := telemetry.InitTracer(ctx, otelCfg, log); initErr != nil {
 		return fmt.Errorf("initializing tracer: %w", initErr)
 	}
 	defer telemetry.ShutdownTracer(log)
+
+	// Initialize OpenTelemetry OTLP metrics export (additive; Prometheus stays authoritative).
+	if initErr := telemetry.InitMeterProvider(ctx, otelCfg, log); initErr != nil {
+		return fmt.Errorf("initializing meter provider: %w", initErr)
+	}
+	defer telemetry.ShutdownMeterProvider(log)
 
 	// Start metrics HTTP server.
 	metricsSrv := metrics.NewServer(cfg.MetricsPort, log)

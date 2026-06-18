@@ -12,6 +12,7 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/vyrodovalexey/grpc-example/internal/config"
+	"github.com/vyrodovalexey/grpc-example/internal/metrics"
 	"github.com/vyrodovalexey/grpc-example/internal/retry"
 )
 
@@ -20,7 +21,24 @@ const (
 	healthCheckTimeout = 10 * time.Second
 	// wellKnownSuffix is the OIDC well-known configuration endpoint path.
 	wellKnownSuffix = "/.well-known/openid-configuration"
+
+	// oidcOpDiscovery is the OIDC provider operation label for issuer discovery.
+	oidcOpDiscovery = "discovery"
+	// oidcOpHealthCheck is the OIDC provider operation label for health checks.
+	oidcOpHealthCheck = "health_check"
 )
+
+// meteredVerifier wraps a TokenVerifier and records OIDC verification outcome metrics.
+type meteredVerifier struct {
+	inner TokenVerifier
+}
+
+// Verify delegates to the wrapped verifier and records the verification outcome.
+func (m *meteredVerifier) Verify(ctx context.Context, rawIDToken string) (*gooidc.IDToken, error) {
+	token, err := m.inner.Verify(ctx, rawIDToken)
+	metrics.RecordOIDCVerification(err == nil)
+	return token, err
+}
 
 // Provider defines the interface for OIDC provider operations.
 type Provider interface {
@@ -56,6 +74,7 @@ func NewProvider(ctx context.Context, cfg config.AuthConfig, logger *zap.Logger)
 	err := retry.Do(ctx, retry.DefaultConfig(), log, "OIDC discovery", func() error {
 		var discoverErr error
 		provider, discoverErr = gooidc.NewProvider(ctx, cfg.OIDCIssuerURL)
+		metrics.RecordOIDCProviderRequest(oidcOpDiscovery, discoverErr == nil)
 		return discoverErr
 	})
 	if err != nil {
@@ -73,7 +92,7 @@ func NewProvider(ctx context.Context, cfg config.AuthConfig, logger *zap.Logger)
 
 	p := &oidcProvider{
 		provider:  provider,
-		verifier:  provider.Verifier(verifierConfig),
+		verifier:  &meteredVerifier{inner: provider.Verifier(verifierConfig)},
 		issuerURL: cfg.OIDCIssuerURL,
 		logger:    log,
 		httpClient: &http.Client{
@@ -129,9 +148,12 @@ func (p *oidcProvider) checkHealth(ctx context.Context) bool {
 			zap.String("issuer", p.issuerURL),
 			zap.Error(err),
 		)
+		metrics.RecordOIDCProviderRequest(oidcOpHealthCheck, false)
 		return false
 	}
 	defer resp.Body.Close()
 
-	return resp.StatusCode == http.StatusOK
+	ok := resp.StatusCode == http.StatusOK
+	metrics.RecordOIDCProviderRequest(oidcOpHealthCheck, ok)
+	return ok
 }

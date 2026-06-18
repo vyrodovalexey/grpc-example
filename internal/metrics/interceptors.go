@@ -20,6 +20,13 @@ func splitMethodName(fullMethod string) (serviceName string, methodName string) 
 	return fullMethod[:pos], fullMethod[pos+1:]
 }
 
+// gRPC type label values.
+const (
+	grpcTypeUnary        = "unary"
+	grpcTypeServerStream = "server_stream"
+	grpcTypeBidiStream   = "bidi_stream"
+)
+
 // UnaryServerInterceptor returns a gRPC unary server interceptor that records Prometheus metrics.
 func UnaryServerInterceptor() grpc.UnaryServerInterceptor {
 	return func(
@@ -30,18 +37,46 @@ func UnaryServerInterceptor() grpc.UnaryServerInterceptor {
 	) (any, error) {
 		serviceName, methodName := splitMethodName(info.FullMethod)
 
-		ServerStartedTotal.WithLabelValues("unary", serviceName, methodName).Inc()
+		ServerStartedTotal.WithLabelValues(grpcTypeUnary, serviceName, methodName).Inc()
+		ServerInFlightRequests.WithLabelValues(grpcTypeUnary, serviceName, methodName).Inc()
+		defer ServerInFlightRequests.WithLabelValues(grpcTypeUnary, serviceName, methodName).Dec()
 
 		startTime := time.Now()
 		resp, err := handler(ctx, req)
 		elapsed := time.Since(startTime).Seconds()
 
 		code := status.Code(err).String()
-		ServerHandledTotal.WithLabelValues("unary", serviceName, methodName, code).Inc()
-		ServerHandlingSeconds.WithLabelValues("unary", serviceName, methodName).Observe(elapsed)
+		ServerHandledTotal.WithLabelValues(grpcTypeUnary, serviceName, methodName, code).Inc()
+		ServerHandlingSeconds.WithLabelValues(grpcTypeUnary, serviceName, methodName).Observe(elapsed)
 
 		return resp, err
 	}
+}
+
+// monitoredServerStream wraps a grpc.ServerStream to count sent and received messages.
+type monitoredServerStream struct {
+	grpc.ServerStream
+	grpcType    string
+	serviceName string
+	methodName  string
+}
+
+// SendMsg records a sent stream message before delegating to the underlying stream.
+func (s *monitoredServerStream) SendMsg(m any) error {
+	err := s.ServerStream.SendMsg(m)
+	if err == nil {
+		ServerMsgSentTotal.WithLabelValues(s.grpcType, s.serviceName, s.methodName).Inc()
+	}
+	return err
+}
+
+// RecvMsg records a received stream message after delegating to the underlying stream.
+func (s *monitoredServerStream) RecvMsg(m any) error {
+	err := s.ServerStream.RecvMsg(m)
+	if err == nil {
+		ServerMsgReceivedTotal.WithLabelValues(s.grpcType, s.serviceName, s.methodName).Inc()
+	}
+	return err
 }
 
 // StreamServerInterceptor returns a gRPC stream server interceptor that records Prometheus metrics.
@@ -54,15 +89,24 @@ func StreamServerInterceptor() grpc.StreamServerInterceptor {
 	) error {
 		serviceName, methodName := splitMethodName(info.FullMethod)
 
-		grpcType := "server_stream"
+		grpcType := grpcTypeServerStream
 		if info.IsClientStream {
-			grpcType = "bidi_stream"
+			grpcType = grpcTypeBidiStream
 		}
 
 		ServerStartedTotal.WithLabelValues(grpcType, serviceName, methodName).Inc()
+		ServerInFlightRequests.WithLabelValues(grpcType, serviceName, methodName).Inc()
+		defer ServerInFlightRequests.WithLabelValues(grpcType, serviceName, methodName).Dec()
+
+		wrapped := &monitoredServerStream{
+			ServerStream: ss,
+			grpcType:     grpcType,
+			serviceName:  serviceName,
+			methodName:   methodName,
+		}
 
 		startTime := time.Now()
-		err := handler(srv, ss)
+		err := handler(srv, wrapped)
 		elapsed := time.Since(startTime).Seconds()
 
 		code := status.Code(err).String()

@@ -1,0 +1,30 @@
+goos: darwin
+goarch: arm64
+pkg: github.com/vyrodovalexey/grpc-example/test/performance
+cpu: Apple M1 Max
+BenchmarkInsecure_UnaryRPC-10          	   17359	     71226 ns/op	    9148 B/op	     151 allocs/op
+BenchmarkTLS_UnaryRPC-10               	   16809	     70532 ns/op	    9328 B/op	     154 allocs/op
+BenchmarkMTLS_UnaryRPC-10              	   12723	     89794 ns/op	   10266 B/op	     165 allocs/op
+BenchmarkOIDC_UnaryRPC-10              	   12734	     88855 ns/op	   13116 B/op	     182 allocs/op
+BenchmarkBoth_UnaryRPC-10              	   13759	     85306 ns/op	   14320 B/op	     195 allocs/op
+BenchmarkTLSHandshake-10               	    1784	    642717 ns/op	  121717 B/op	     877 allocs/op
+BenchmarkMTLSHandshake-10              	    1656	    848342 ns/op	  142746 B/op	    1101 allocs/op
+BenchmarkTokenValidationOverhead/no_auth-10         	   17205	     69163 ns/op	    9310 B/op	     151 allocs/op
+BenchmarkTokenValidationOverhead/with_oidc-10       	   16208	     72712 ns/op	   13241 B/op	     182 allocs/op
+BenchmarkAuthModes_Comparison/insecure-10           	   17307	     66924 ns/op	    9288 B/op	     151 allocs/op
+BenchmarkAuthModes_Comparison/tls-10                	   17899	     68189 ns/op	    9468 B/op	     155 allocs/op
+BenchmarkAuthModes_Comparison/mtls-10               	   17161	     70140 ns/op	   10352 B/op	     165 allocs/op
+BenchmarkAuthModes_Comparison/oidc-10               	   16296	     73474 ns/op	   13293 B/op	     182 allocs/op
+BenchmarkAuthModes_Comparison/both-10               	   14722	     79571 ns/op	   14275 B/op	     195 allocs/op
+BenchmarkMetricsOverhead/disabled-10                	   19297	     66504 ns/op	    9281 B/op	     151 allocs/op
+BenchmarkMetricsOverhead/enabled-10                 	   17964	     66649 ns/op	    9373 B/op	     154 allocs/op
+BenchmarkStreamMetricsOverhead/disabled-10          	   14550	     81766 ns/op	   14013 B/op	     265 allocs/op
+BenchmarkStreamMetricsOverhead/enabled-10           	   14155	     85431 ns/op	   14010 B/op	     267 allocs/op
+BenchmarkAuthMetricsOverhead/mtls-10                	13495389	        90.61 ns/op	       0 B/op	       0 allocs/op
+BenchmarkAuthMetricsOverhead/oidc-10                	13316224	        90.48 ns/op	       0 B/op	       0 allocs/op
+BenchmarkOTLP/disabled-10                           	   18340	     65039 ns/op	    9425 B/op	     154 allocs/op
+BenchmarkOTLP/enabled-10                            	   18292	     67038 ns/op	    9373 B/op	     154 allocs/op
+BenchmarkNewConnection_Insecure-10                  	    3978	    317788 ns/op	  134135 B/op	     862 allocs/op
+BenchmarkNewConnection_MTLS-10                      	    1065	   1105688 ns/op	  298250 B/op	    2043 allocs/op
+PASS
+ok  	github.com/vyrodovalexey/grpc-example/test/performance	29.571s

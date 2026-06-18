@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/vyrodovalexey/grpc-example/actions/workflows/ci.yml/badge.svg)](https://github.com/vyrodovalexey/grpc-example/actions/workflows/ci.yml)
 [![Coverage](https://codecov.io/gh/alexey/grpc-example/branch/main/graph/badge.svg)](https://codecov.io/gh/alexey/grpc-example)
-[![Go Version](https://img.shields.io/badge/go-1.25.7-blue.svg)](https://golang.org/dl/)
+[![Go Version](https://img.shields.io/badge/go-1.26.4-blue.svg)](https://golang.org/dl/)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
 A comprehensive gRPC test server implementation in Go, designed for testing and development purposes. This server provides three different types of gRPC endpoints to demonstrate various communication patterns with advanced authentication capabilities.
@@ -41,8 +41,8 @@ The server is built with production-ready features including structured logging,
 - ✅ **OIDC authentication** with OpenID Connect token validation
 - ✅ **Vault PKI integration** for automated certificate management
 - ✅ **Keycloak integration** for identity and access management
-- ✅ **Prometheus metrics** with gRPC request metrics and health endpoints
-- ✅ **OpenTelemetry tracing** with OTLP exporter support
+- ✅ **Prometheus metrics** with gRPC, auth, Vault PKI, and OIDC metrics plus health endpoints
+- ✅ **OpenTelemetry** with OTLP/HTTP export for both traces and metrics
 - ✅ **Helm chart** for Kubernetes deployment
 - ✅ **Performance benchmarks** with ~13k req/s throughput
 - ✅ Structured JSON logging with configurable levels
@@ -57,7 +57,7 @@ The server is built with production-ready features including structured logging,
 
 ## Prerequisites
 
-- **Go 1.25.7+** - [Download](https://golang.org/dl/)
+- **Go 1.26.4+** - [Download](https://golang.org/dl/)
 - **Protocol Buffers Compiler (protoc)** - [Installation Guide](https://grpc.io/docs/protoc-installation/)
 - **Docker and Docker Compose** (for test environment) - [Download](https://www.docker.com/get-started)
 
@@ -68,10 +68,10 @@ The server is built with production-ready features including structured logging,
 make tools
 
 # Or install manually
-go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.1.6
+go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.12.2
 go install golang.org/x/vuln/cmd/govulncheck@latest
-go install google.golang.org/protobuf/cmd/protoc-gen-go@v1.36.6
-go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@v1.5.1
+go install google.golang.org/protobuf/cmd/protoc-gen-go@v1.36.11
+go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@v1.6.0
 go install golang.org/x/tools/cmd/goimports@latest
 ```
 
@@ -132,9 +132,18 @@ The server supports multiple authentication modes to meet different security req
 | Mode | Description | Use Case |
 |------|-------------|----------|
 | `none` | No authentication (default) | Development, backward compatibility |
-| `mtls` | Mutual TLS authentication | High-security environments, service-to-service |
-| `oidc` | OpenID Connect token authentication | User authentication, web applications |
-| `both` | Combined mTLS + OIDC | Maximum security, enterprise environments |
+| `mtls` | Mutual TLS authentication via Vault PKI client certificate verification | High-security environments, service-to-service |
+| `oidc` | OpenID Connect bearer token authentication via Keycloak | User authentication, web applications |
+| `both` | Combined mTLS + OIDC (client must present a valid certificate **and** a valid bearer token) | Maximum security, enterprise environments |
+
+#### How Clients Authenticate
+
+| Mode | Client Requirement |
+|------|--------------------|
+| `none` | No credentials required. Connect with plaintext (`grpcurl -plaintext`). |
+| `mtls` | Present a client certificate signed by the trusted CA (the Vault PKI CA). The server verifies the certificate chain. |
+| `oidc` | Send a valid JWT in the `Authorization: Bearer <token>` metadata. The server validates the token against the issuer's public keys. |
+| `both` | Present **both** a valid client certificate **and** a valid bearer token. Both checks must pass. |
 
 ### mTLS Configuration
 
@@ -262,14 +271,39 @@ The server exposes Prometheus metrics on a separate HTTP port (default 9090) to 
 
 #### Available Metrics
 
+**gRPC server metrics** (labels: `grpc_type`, `grpc_service`, `grpc_method`):
+
 | Metric | Type | Description |
 |--------|------|-------------|
-| `grpc_server_started_total` | Counter | Total number of gRPC requests started |
-| `grpc_server_handled_total` | Counter | Total number of gRPC requests completed |
-| `grpc_server_handling_seconds` | Histogram | Time spent handling gRPC requests |
-| `auth_attempts_total` | Counter | Total authentication attempts by method and result |
+| `grpc_server_started_total` | Counter | Total number of RPCs started on the server |
+| `grpc_server_handled_total` | Counter | Total number of RPCs completed (adds the `grpc_code` label) |
+| `grpc_server_handling_seconds` | Histogram | Histogram of response latency (seconds) of handled RPCs |
+| `grpc_server_in_flight_requests` | Gauge | Number of RPCs currently being handled by the server |
+| `grpc_server_msg_received_total` | Counter | Total number of stream messages received by the server |
+| `grpc_server_msg_sent_total` | Counter | Total number of stream messages sent by the server |
 
-All gRPC metrics include labels for `grpc_service`, `grpc_method`, and `grpc_type`. Auth metrics include `auth_method` and `result` labels.
+**Authentication metrics:**
+
+| Metric | Type | Labels | Description |
+|--------|------|--------|-------------|
+| `auth_attempts_total` | Counter | `auth_type`, `result` | Total authentication attempts |
+| `auth_attempt_duration_seconds` | Histogram | `auth_type`, `result` | Authentication attempt latency |
+
+**Vault PKI metrics:**
+
+| Metric | Type | Labels | Description |
+|--------|------|--------|-------------|
+| `vault_pki_operations_total` | Counter | `operation`, `result` | Total Vault PKI operations |
+| `vault_pki_operation_duration_seconds` | Histogram | `operation` | Vault PKI operation latency |
+
+**OIDC metrics:**
+
+| Metric | Type | Labels | Description |
+|--------|------|--------|-------------|
+| `oidc_verification_total` | Counter | `result` | Total OIDC token verifications |
+| `oidc_provider_requests_total` | Counter | `operation`, `result` | Total OIDC provider requests (discovery, JWKS, health) |
+
+Label values: `auth_type` is one of `mtls` or `oidc`; `result` is one of `success` or `failure`.
 
 #### Example Prometheus Configuration
 
@@ -299,26 +333,37 @@ rate(grpc_server_handled_total{grpc_code!="OK"}[5m]) / rate(grpc_server_handled_
 rate(auth_attempts_total{result="success"}[5m]) / rate(auth_attempts_total[5m])
 ```
 
-### OpenTelemetry Tracing
+### OpenTelemetry (Traces and Metrics)
 
-The server supports distributed tracing using OpenTelemetry with OTLP (OpenTelemetry Protocol) exporter for integration with tracing backends like Jaeger, Tempo, or cloud providers.
+The server supports OpenTelemetry over OTLP/HTTP for integration with collectors and backends
+like Jaeger, Tempo, the OpenTelemetry Collector, or cloud providers. When enabled, the server
+exports **both distributed traces and metrics** via OTLP/HTTP.
+
+The Prometheus pull endpoint (`/metrics` on `METRICS_PORT`) remains the authoritative source of
+truth for metrics. OTLP metrics export is an additive push pipeline and never touches the
+Prometheus registry. Metrics are pushed periodically (every 15 seconds).
 
 #### Configuration
 
-OpenTelemetry tracing is configured via environment variables:
+OpenTelemetry is configured via environment variables and is enabled only when `OTEL_ENABLED=true`
+**and** `OTEL_EXPORTER_OTLP_ENDPOINT` is set:
 
 | Variable | Description | Default | Example |
 |----------|-------------|---------|---------|
-| `OTEL_ENABLED` | Enable OpenTelemetry tracing | `false` | `true` |
-| `OTEL_EXPORTER_OTLP_ENDPOINT` | OTLP collector endpoint | | `http://localhost:4318` |
-| `OTEL_SERVICE_NAME` | Service name for traces | `grpc-example-server` | `my-grpc-server` |
+| `OTEL_ENABLED` | Enable OpenTelemetry traces and metrics export | `false` | `true` |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | OTLP/HTTP endpoint as `host:port` (no scheme) | | `localhost:4318` |
+| `OTEL_SERVICE_NAME` | Service name for traces and metrics | `grpc-example-server` | `my-grpc-server` |
+
+> **Endpoint format**: The OTLP/HTTP exporters use `host:port` without a URL scheme (the default
+> OTLP/HTTP port is `4318`). The connection is **insecure** (plaintext HTTP) by default in this setup.
 
 #### Features
 
-- **Automatic gRPC Instrumentation**: Uses `otelgrpc.NewServerHandler()` for automatic span creation
+- **Traces**: Automatic gRPC instrumentation via `otelgrpc.NewServerHandler()` for span creation
+- **Metrics**: OTLP/HTTP metrics export via a periodic reader (15s interval) using `otlpmetrichttp`
 - **Trace Propagation**: Supports W3C TraceContext and Baggage propagation
-- **No-op by Default**: Tracing is disabled when no endpoint is configured (zero overhead)
-- **OTLP Export**: Compatible with any OTLP-compatible collector or backend
+- **No-op by Default**: Both traces and metrics export are disabled when no endpoint is configured (zero overhead)
+- **OTLP/HTTP Export**: Compatible with any OTLP/HTTP-compatible collector or backend
 
 #### Example with Jaeger
 
@@ -331,20 +376,20 @@ docker run -d --name jaeger \
   -p 4318:4318 \
   jaegertracing/all-in-one:latest
 
-# Configure server with tracing
+# Configure server with OpenTelemetry (note: host:port, no scheme)
 export OTEL_ENABLED=true
-export OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318
+export OTEL_EXPORTER_OTLP_ENDPOINT=localhost:4318
 export OTEL_SERVICE_NAME=grpc-server
 
 ./bin/grpc-server
 ```
 
-#### Example with Grafana Tempo
+#### Example with the OpenTelemetry Collector
 
 ```bash
-# Configure server with Tempo
+# Configure server to push traces and metrics to a collector
 export OTEL_ENABLED=true
-export OTEL_EXPORTER_OTLP_ENDPOINT=http://tempo:4318
+export OTEL_EXPORTER_OTLP_ENDPOINT=otel-collector:4318
 export OTEL_SERVICE_NAME=grpc-server
 
 ./bin/grpc-server
@@ -355,9 +400,9 @@ export OTEL_SERVICE_NAME=grpc-server
 | Variable | Description | Default | Example |
 |----------|-------------|---------|---------|
 | `METRICS_PORT` | Metrics HTTP server port | `9090` | `8080` |
-| `OTEL_ENABLED` | Enable OpenTelemetry tracing | `false` | `true` |
-| `OTEL_EXPORTER_OTLP_ENDPOINT` | OTLP collector endpoint | | `http://localhost:4318` |
-| `OTEL_SERVICE_NAME` | Service name for traces | `grpc-example-server` | `my-grpc-server` |
+| `OTEL_ENABLED` | Enable OpenTelemetry traces and metrics export | `false` | `true` |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | OTLP/HTTP endpoint as `host:port` (no scheme) | | `localhost:4318` |
+| `OTEL_SERVICE_NAME` | Service name for traces and metrics | `grpc-example-server` | `my-grpc-server` |
 
 ## Configuration
 
@@ -377,9 +422,9 @@ The server can be configured using environment variables:
 
 | Variable | Description | Default | Valid Values |
 |----------|-------------|---------|--------------|
-| `OTEL_ENABLED` | Enable OpenTelemetry tracing | `false` | `true`, `false` |
-| `OTEL_EXPORTER_OTLP_ENDPOINT` | OTLP collector endpoint | | URL (e.g., `http://localhost:4318`) |
-| `OTEL_SERVICE_NAME` | Service name for traces | `grpc-example-server` | String |
+| `OTEL_ENABLED` | Enable OpenTelemetry traces and metrics export | `false` | `true`, `false` |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | OTLP/HTTP endpoint as `host:port` (no scheme) | | `host:port` (e.g., `localhost:4318`) |
+| `OTEL_SERVICE_NAME` | Service name for traces and metrics | `grpc-example-server` | String |
 
 ### Authentication Configuration
 
@@ -450,22 +495,43 @@ export OIDC_CLIENT_SECRET=grpc-server-secret
 
 ## Test Environment
 
-A complete test environment is provided using Docker Compose, including Vault and Keycloak services for testing authentication features.
+A complete test environment is provided using Docker Compose
+(`test/docker-compose/docker-compose.yml`). It provisions everything needed to exercise the
+authentication flows end to end:
+
+- **Vault** — issues mTLS certificates via the PKI secrets engine
+- **Keycloak** — OIDC identity provider that issues bearer tokens
+- **PostgreSQL** — backing database for Keycloak
+- **grpc-server** — the application under test, built from the local source
+
+The test environment defaults to `AUTH_MODE=both`, so the server enforces **both** mTLS (Vault
+PKI) and OIDC (Keycloak) for the strongest end-to-end assertions. Keycloak is configured with a
+**fixed issuer** (`KC_HOSTNAME=http://keycloak:8090`) so the OIDC `iss` claim is stable whether
+tokens are validated from inside Docker or from the host. Override `AUTH_MODE` per run to exercise
+a single mechanism (for example `AUTH_MODE=mtls OIDC_ENABLED=false`).
+
+Defaults for the environment live in `test/docker-compose/.env.test`.
 
 ### Starting the Test Environment
 
 ```bash
-# Start all services (Vault, Keycloak, PostgreSQL)
+# Start all services (Vault, Keycloak, PostgreSQL, grpc-server)
 make test-env-up
+
+# Wait for all services to become healthy
+make test-env-wait
 
 # Check service status
 make test-env-status
 
-# View logs
+# View logs (use SVC=<name> for a single service)
 make test-env-logs
 
 # Stop all services
 make test-env-down
+
+# Stop services and remove volumes
+make test-env-clean
 ```
 
 ### Available Services
@@ -473,17 +539,23 @@ make test-env-down
 | Service | Port | Description | Access |
 |---------|------|-------------|--------|
 | **Vault** | 8200 | HashiCorp Vault for PKI | http://localhost:8200 |
-| **Keycloak** | 8090 | Identity and Access Management | http://localhost:8090 |
+| **Keycloak** | 8090 | Identity and Access Management (issuer: `http://keycloak:8090`) | http://localhost:8090 |
 | **Keycloak Health** | 8091 | Keycloak health endpoint | http://localhost:8091 |
 | **PostgreSQL** | 5432 | Database for Keycloak | localhost:5432 |
+| **grpc-server** | 50051 / 9090 | Application under test (gRPC / metrics) | localhost:50051 |
 
 ### Default Credentials
 
 - **Vault Root Token**: `myroot`
 - **Keycloak Admin**: `admin` / `admin`
+- **Keycloak Realm**: `grpc-test`
+- **OIDC Client**: `grpc-server` / `grpc-server-secret`
 - **PostgreSQL**: `keycloak` / `password`
 
 ### Running Different Test Types
+
+The integration, e2e, and performance targets automatically start the test environment
+(`test-env-up`) and wait for it to be healthy (`test-env-wait`) before running.
 
 ```bash
 # Unit tests (no external dependencies)
@@ -890,12 +962,13 @@ helm install grpc-server ./helm/grpc-server \
   --set oidc.clientSecretName=oidc-secret
 ```
 
-#### OpenTelemetry Tracing
+#### OpenTelemetry (Traces and Metrics)
 
 ```bash
+# otel.endpoint is host:port (no scheme); 4318 is the default OTLP/HTTP port
 helm install grpc-server ./helm/grpc-server \
   --set otel.enabled=true \
-  --set otel.endpoint=http://otel-collector:4317 \
+  --set otel.endpoint=otel-collector:4318 \
   --set otel.serviceName=grpc-server
 ```
 
@@ -952,7 +1025,7 @@ oidc:
 
 otel:
   enabled: true
-  endpoint: http://otel-collector:4317
+  endpoint: otel-collector:4318  # host:port, no scheme (OTLP/HTTP)
   serviceName: grpc-server
 
 metrics:
@@ -1014,9 +1087,12 @@ curl http://localhost:9090/metrics
 
 The CI workflow (`.github/workflows/ci.yml`) runs on pull requests and version tags and includes:
 
+The pipeline pins its toolchain to **Go 1.26.4** and **golangci-lint v2.12.2** (matching the
+`Makefile` and `go.mod`).
+
 1. **Parallel Stage:**
-   - Code linting with golangci-lint
-   - Vulnerability scanning with govulncheck
+   - Code linting with golangci-lint v2.12.2
+   - Vulnerability scanning with govulncheck (build is kept clean of known vulnerabilities)
    - Unit tests with coverage reporting
    - Functional tests with coverage reporting
    - Helm chart linting and dry-run validation
@@ -1039,7 +1115,8 @@ The CI workflow also handles releases when triggered by version tags and include
    - Checksum generation
 3. **Docker:**
    - Multi-architecture Docker builds (amd64, arm64)
-   - Push to Docker Hub with semantic versioning
+   - Push to GitHub Container Registry (ghcr.io) with semantic versioning
+   - SBOM generation (SPDX)
 4. **Helm:**
    - Helm chart packaging with version updates
    - Chart artifact upload to GitHub release
@@ -1055,8 +1132,9 @@ Configure these secrets in your GitHub repository:
 |--------|-------------|--------------|
 | `CODECOV_TOKEN` | Codecov upload token | Coverage reporting |
 | `SONAR_TOKEN` | SonarCloud authentication | Code analysis |
-| `DOCKERHUB_USERNAME` | Docker Hub username | Docker image push |
-| `DOCKERHUB_TOKEN` | Docker Hub access token | Docker image push |
+
+Docker images are pushed to the GitHub Container Registry (ghcr.io) using the built-in
+`GITHUB_TOKEN`; no additional registry secrets are required.
 
 ### Triggering a Release
 

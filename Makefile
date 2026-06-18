@@ -35,9 +35,11 @@ PROTO_DIR := api/proto
 PROTO_OUT := pkg/api
 
 # Tools
-GOLANGCI_LINT_VERSION := v2.1.6
-PROTOC_GEN_GO_VERSION := v1.36.6
-PROTOC_GEN_GO_GRPC_VERSION := v1.5.1
+GOLANGCI_LINT_VERSION := v2.12.2
+# Pinned to match google.golang.org/protobuf in go.mod (v1.36.11) and the
+# checked-in generated code headers (pkg/api/v1/*.pb.go) for reproducible `make proto`.
+PROTOC_GEN_GO_VERSION := v1.36.11
+PROTOC_GEN_GO_GRPC_VERSION := v1.6.0
 
 .PHONY: all proto build test test-unit test-functional test-coverage lint vulncheck docker-build docker-push clean help tools \
        test-env-up test-env-down test-env-logs test-env-clean test-env-status test-env-wait \

@@ -3,6 +3,7 @@ package oidc
 
 import (
 	"context"
+	"time"
 
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/vyrodovalexey/grpc-example/internal/auth"
 	"github.com/vyrodovalexey/grpc-example/internal/config"
+	"github.com/vyrodovalexey/grpc-example/internal/metrics"
 )
 
 // UnaryInterceptor returns a gRPC unary server interceptor that validates OIDC bearer tokens.
@@ -27,7 +29,9 @@ func UnaryInterceptor(
 		info *grpc.UnaryServerInfo,
 		handler grpc.UnaryHandler,
 	) (any, error) {
+		start := time.Now()
 		identity, err := ValidateToken(ctx, provider, cfg)
+		metrics.RecordAuthAttempt(metrics.AuthTypeOIDC, err == nil, time.Since(start))
 		if err != nil {
 			log.Warn("OIDC authentication failed",
 				zap.String("method", info.FullMethod),
@@ -61,7 +65,9 @@ func StreamInterceptor(
 		info *grpc.StreamServerInfo,
 		handler grpc.StreamHandler,
 	) error {
+		start := time.Now()
 		identity, err := ValidateToken(ss.Context(), provider, cfg)
+		metrics.RecordAuthAttempt(metrics.AuthTypeOIDC, err == nil, time.Since(start))
 		if err != nil {
 			log.Warn("OIDC stream authentication failed",
 				zap.String("method", info.FullMethod),

@@ -3,6 +3,7 @@ package mtls
 
 import (
 	"context"
+	"time"
 
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
@@ -10,6 +11,7 @@ import (
 	"google.golang.org/grpc/status"
 
 	"github.com/vyrodovalexey/grpc-example/internal/auth"
+	"github.com/vyrodovalexey/grpc-example/internal/metrics"
 )
 
 // UnaryInterceptor returns a gRPC unary server interceptor that validates client certificates.
@@ -22,7 +24,9 @@ func UnaryInterceptor(cfg Config, logger *zap.Logger) grpc.UnaryServerIntercepto
 		info *grpc.UnaryServerInfo,
 		handler grpc.UnaryHandler,
 	) (any, error) {
+		start := time.Now()
 		identity, err := ValidatePeerCertificate(ctx, cfg)
+		metrics.RecordAuthAttempt(metrics.AuthTypeMTLS, err == nil, time.Since(start))
 		if err != nil {
 			log.Warn("mTLS authentication failed",
 				zap.String("method", info.FullMethod),
@@ -52,7 +56,9 @@ func StreamInterceptor(cfg Config, logger *zap.Logger) grpc.StreamServerIntercep
 		info *grpc.StreamServerInfo,
 		handler grpc.StreamHandler,
 	) error {
+		start := time.Now()
 		identity, err := ValidatePeerCertificate(ss.Context(), cfg)
+		metrics.RecordAuthAttempt(metrics.AuthTypeMTLS, err == nil, time.Since(start))
 		if err != nil {
 			log.Warn("mTLS stream authentication failed",
 				zap.String("method", info.FullMethod),

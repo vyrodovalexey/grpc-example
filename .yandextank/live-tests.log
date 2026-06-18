@@ -1,0 +1,55 @@
+=== RUN   TestPerformance_ConcurrentRequests_Insecure
+=== PAUSE TestPerformance_ConcurrentRequests_Insecure
+=== RUN   TestPerformance_ConcurrentRequests_MTLS
+=== PAUSE TestPerformance_ConcurrentRequests_MTLS
+=== RUN   TestPerformance_ConcurrentRequests_OIDC
+=== PAUSE TestPerformance_ConcurrentRequests_OIDC
+=== RUN   TestPerformance_ConcurrentRequests_Both
+=== PAUSE TestPerformance_ConcurrentRequests_Both
+=== RUN   TestPerformance_ConnectionPooling_MTLS
+=== PAUSE TestPerformance_ConnectionPooling_MTLS
+=== RUN   TestPerformance_TokenCachingEffectiveness
+=== PAUSE TestPerformance_TokenCachingEffectiveness
+=== RUN   TestPerformance_LiveServer_ConcurrentRequests
+    load_test.go:539: [LiveServer_ConcurrentRequests] mode=both 1000 requests in 313.537958ms (3189 req/s) success=1000 errors=0
+    load_test.go:539: [LiveServer_ConcurrentRequests] latency p50=1.943125ms p95=6.648916ms p99=17.029834ms min=552.375µs max=26.300709ms
+--- PASS: TestPerformance_LiveServer_ConcurrentRequests (0.73s)
+=== RUN   TestPerformance_LiveServer_Sustained
+    load_test.go:567: [LiveServer_Sustained] mode=both 5000 requests in 808.097ms (6187 req/s) success=5000 errors=0
+    load_test.go:567: [LiveServer_Sustained] latency p50=2.538ms p95=6.182959ms p99=12.848709ms min=525.5µs max=18.978708ms
+--- PASS: TestPerformance_LiveServer_Sustained (1.12s)
+=== RUN   TestPerformance_LiveServer_MetricsConsistency
+    load_test.go:607: [LiveServer_MetricsConsistency] mode=both 1000 requests in 523.876375ms (1909 req/s) success=1000 errors=0
+    load_test.go:607: [LiveServer_MetricsConsistency] latency p50=1.939458ms p95=4.777ms p99=7.757333ms min=549.166µs max=288.913958ms
+--- PASS: TestPerformance_LiveServer_MetricsConsistency (0.56s)
+=== CONT  TestPerformance_ConcurrentRequests_Insecure
+=== CONT  TestPerformance_TokenCachingEffectiveness
+=== CONT  TestPerformance_ConcurrentRequests_Both
+=== CONT  TestPerformance_ConcurrentRequests_OIDC
+=== CONT  TestPerformance_ConnectionPooling_MTLS
+=== CONT  TestPerformance_ConcurrentRequests_MTLS
+=== NAME  TestPerformance_ConnectionPooling_MTLS
+    load_test.go:301: Connection pooling (shared conn): 50 requests in 36.557541ms (1368 req/s)
+=== NAME  TestPerformance_TokenCachingEffectiveness
+    load_test.go:350: Same token (cached): 100 requests in 63.308875ms (1580 req/s)
+=== NAME  TestPerformance_ConcurrentRequests_OIDC
+    load_test.go:198: OIDC: 1000 requests in 86.458709ms (11566 req/s), success=1000, errors=0
+--- PASS: TestPerformance_ConcurrentRequests_OIDC (0.09s)
+=== NAME  TestPerformance_ConcurrentRequests_Insecure
+    load_test.go:73: Insecure: 1000 requests in 87.89975ms (11377 req/s), success=1000, errors=0
+--- PASS: TestPerformance_ConcurrentRequests_Insecure (0.09s)
+=== NAME  TestPerformance_ConcurrentRequests_MTLS
+    load_test.go:138: mTLS: 1000 requests in 87.160625ms (11473 req/s), success=1000, errors=0
+=== NAME  TestPerformance_ConcurrentRequests_Both
+    load_test.go:264: Both (mTLS+OIDC): 1000 requests in 86.685625ms (11536 req/s), success=1000, errors=0
+--- PASS: TestPerformance_ConcurrentRequests_MTLS (0.09s)
+--- PASS: TestPerformance_ConcurrentRequests_Both (0.09s)
+=== NAME  TestPerformance_TokenCachingEffectiveness
+    load_test.go:366: Different tokens (uncached): 100 requests in 65.882209ms (1518 req/s)
+--- PASS: TestPerformance_TokenCachingEffectiveness (0.13s)
+=== NAME  TestPerformance_ConnectionPooling_MTLS
+    load_test.go:318: No connection pooling (new conn): 50 requests in 155.958375ms (321 req/s)
+    load_test.go:324: Pooling speedup: 4.27x
+--- PASS: TestPerformance_ConnectionPooling_MTLS (0.20s)
+PASS
+ok  	github.com/vyrodovalexey/grpc-example/test/performance	(cached)

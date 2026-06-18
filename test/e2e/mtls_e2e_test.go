@@ -29,6 +29,8 @@ func TestE2E_MTLS_ClientWithVaultIssuedCert(t *testing.T) {
 	ctx, cancel := newE2EContext()
 	defer cancel()
 
+	ctx = maybeAuthContext(t, ctx)
+
 	resp, err := client.Unary(ctx, &apiv1.UnaryRequest{Message: "e2e mTLS test"})
 	require.NoError(t, err)
 	assert.Equal(t, "e2e mTLS test", resp.GetMessage())
@@ -48,6 +50,8 @@ func TestE2E_MTLS_ServerStreamWithVaultCert(t *testing.T) {
 
 	ctx, cancel := newE2EContext()
 	defer cancel()
+
+	ctx = maybeAuthContext(t, ctx)
 
 	stream, err := client.ServerStream(ctx, &apiv1.StreamRequest{
 		Count:      5,
@@ -80,6 +84,8 @@ func TestE2E_MTLS_BidiStreamWithVaultCert(t *testing.T) {
 
 	ctx, cancel := newE2EContext()
 	defer cancel()
+
+	ctx = maybeAuthContext(t, ctx)
 
 	stream, err := client.BidirectionalStream(ctx)
 	require.NoError(t, err)
@@ -147,6 +153,8 @@ func TestE2E_MTLS_MultipleClientsWithDifferentCerts(t *testing.T) {
 			ctx, cancel := newE2EContext()
 			defer cancel()
 
+			ctx = maybeAuthContext(t, ctx)
+
 			resp, err := client.Unary(ctx, &apiv1.UnaryRequest{
 				Message: fmt.Sprintf("from %s", name),
 			})
@@ -192,6 +200,8 @@ func TestE2E_MTLS_ConcurrentRequests(t *testing.T) {
 
 			ctx, cancel := newE2EContext()
 			defer cancel()
+
+			ctx = maybeAuthContext(t, ctx)
 
 			msg := fmt.Sprintf("concurrent-%d", idx)
 			resp, err := client.Unary(ctx, &apiv1.UnaryRequest{Message: msg})

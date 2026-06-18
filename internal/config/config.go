@@ -541,37 +541,37 @@ func isValidAuthMode(mode string) bool {
 // String returns a string representation of the config, hiding sensitive data.
 func (c *Config) String() string {
 	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf(
+	fmt.Fprintf(&sb,
 		"Config{GRPCPort: %d, MetricsPort: %d, LogLevel: %s, ShutdownTimeout: %s",
 		c.GRPCPort,
 		c.MetricsPort,
 		c.LogLevel,
 		c.ShutdownTimeout,
-	))
+	)
 
 	if c.TLS.Enabled {
-		sb.WriteString(fmt.Sprintf(", TLS: enabled, TLSMode: %s", c.TLS.Mode))
+		fmt.Fprintf(&sb, ", TLS: enabled, TLSMode: %s", c.TLS.Mode)
 		if c.TLS.VaultEnabled {
-			sb.WriteString(fmt.Sprintf(", VaultAddr: %s, VaultToken: %s", sensitiveValueMask, sensitiveValueMask))
+			fmt.Fprintf(&sb, ", VaultAddr: %s, VaultToken: %s", sensitiveValueMask, sensitiveValueMask)
 		}
 	} else {
 		sb.WriteString(", TLS: disabled")
 	}
 
-	sb.WriteString(fmt.Sprintf(", AuthMode: %s", c.Auth.Mode))
+	fmt.Fprintf(&sb, ", AuthMode: %s", c.Auth.Mode)
 
 	if c.Auth.OIDCEnabled {
-		sb.WriteString(fmt.Sprintf(
+		fmt.Fprintf(&sb,
 			", OIDC: enabled, OIDCIssuer: %s, OIDCClientID: %s, OIDCClientSecret: %s",
 			sensitiveValueMask,
 			sensitiveValueMask,
 			sensitiveValueMask,
-		))
+		)
 	}
 
 	if c.OTEL.Enabled {
-		sb.WriteString(fmt.Sprintf(", OTEL: enabled, OTELEndpoint: %s, OTELServiceName: %s",
-			c.OTEL.Endpoint, c.OTEL.ServiceName))
+		fmt.Fprintf(&sb, ", OTEL: enabled, OTELEndpoint: %s, OTELServiceName: %s",
+			c.OTEL.Endpoint, c.OTEL.ServiceName)
 	}
 
 	sb.WriteString("}")

@@ -350,5 +350,8 @@ func TestStreamServerInterceptor_PassesThroughServerAndStream(t *testing.T) {
 	// Assert
 	require.NoError(t, err)
 	assert.Equal(t, testSrv, capturedSrv)
-	assert.Equal(t, stream, capturedStream)
+	// The interceptor wraps the stream to count sent/received messages while
+	// preserving the original context (pass-through semantics).
+	require.NotNil(t, capturedStream)
+	assert.Equal(t, stream.Context(), capturedStream.Context())
 }

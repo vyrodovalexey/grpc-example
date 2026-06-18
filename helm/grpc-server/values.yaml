@@ -108,13 +108,15 @@ oidc:
   # Expected audience in the token
   audience: ""
 
-# OpenTelemetry configuration for distributed tracing
+# OpenTelemetry configuration for OTLP metrics export.
+# The server pushes metrics via the OTLP/HTTP exporter (insecure). This is
+# additive; the Prometheus /metrics endpoint remains the authoritative source.
 otel:
-  # Enable OpenTelemetry tracing
+  # Enable OpenTelemetry OTLP metrics export
   enabled: false
-  # OTLP exporter endpoint (e.g., http://otel-collector:4317)
+  # OTLP/HTTP exporter endpoint as host:port (no scheme), e.g. otel-collector:4318
   endpoint: ""
-  # Service name for tracing
+  # Service name reported on exported metrics (defaults to the release fullname)
   serviceName: ""
 
 service:
