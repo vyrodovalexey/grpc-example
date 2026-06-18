@@ -64,6 +64,16 @@ services:
       KC_DB_USERNAME: ${KC_DB_USER:-keycloak}
       KC_DB_PASSWORD: ${KC_DB_PASSWORD:-password}
       KC_HTTP_PORT: 8090
+      # Fix the public frontend URL so the OIDC issuer (`iss` claim) and the
+      # discovery document's `issuer` field are STABLE regardless of which host
+      # the token/discovery endpoint is reached through (docker network alias
+      # `keycloak` from the server, or `localhost:8090` from the host tests).
+      # This keeps issuer validation enforced while making it consistent.
+      KC_HOSTNAME: "http://keycloak:8090"
+      # Allow back-channel (token/admin) requests to be served on the host the
+      # request actually arrives on (e.g. localhost:8090 from host-based tests),
+      # while the issued `iss` claim stays pinned to KC_HOSTNAME above.
+      KC_HOSTNAME_BACKCHANNEL_DYNAMIC: "true"
       KC_HOSTNAME_STRICT: "false"
       KC_HOSTNAME_STRICT_HTTPS: "false"
       KC_HTTP_ENABLED: "true"

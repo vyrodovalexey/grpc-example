@@ -1,7 +1,19 @@
 # Performance Test Cases
 
 ## Overview
-This document describes the performance and benchmark test cases for the gRPC Test Server. These tests measure authentication overhead, connection establishment costs, and throughput under various authentication modes.
+This document describes the performance and benchmark test cases for the gRPC Test Server. These tests measure authentication overhead, connection establishment costs, throughput under various authentication modes, and the overhead of observability instrumentation (Prometheus metric recording and OTLP export).
+
+## Authentication Method Coverage Axis
+
+Benchmarks and load tests cover all authentication modes:
+
+| Auth Mode | Description |
+|-----------|-------------|
+| `none` (insecure) | No TLS, no auth — baseline |
+| `tls` | Server-side TLS only |
+| `mtls` | Mutual TLS (Vault PKI / client cert) |
+| `oidc` | OIDC bearer-token validation |
+| `both` | mTLS client cert AND OIDC bearer token |
 
 ## Test Categories
 
@@ -15,6 +27,7 @@ This document describes the performance and benchmark test cases for the gRPC Te
 | BenchmarkTLS_UnaryRPC | Unary RPC with TLS (server-side only) | Latency, allocations per operation |
 | BenchmarkMTLS_UnaryRPC | Unary RPC with mutual TLS authentication | Latency, allocations per operation |
 | BenchmarkOIDC_UnaryRPC | Unary RPC with OIDC token authentication | Latency, allocations per operation |
+| BenchmarkBoth_UnaryRPC | Unary RPC with mTLS cert AND OIDC token | Latency, allocations per operation |
 
 #### Handshake Benchmarks
 
@@ -33,6 +46,22 @@ This document describes the performance and benchmark test cases for the gRPC Te
 | BenchmarkAuthModes_Comparison/tls | TLS overhead vs insecure | Latency |
 | BenchmarkAuthModes_Comparison/mtls | mTLS overhead vs insecure | Latency |
 | BenchmarkAuthModes_Comparison/oidc | OIDC overhead vs insecure | Latency |
+| BenchmarkAuthModes_Comparison/both | mTLS+OIDC combined overhead vs insecure | Latency |
+
+#### Observability Overhead Benchmarks
+
+These benchmarks quantify the cost of the additive observability features so
+that regressions in the hot path can be detected and budgeted.
+
+| Benchmark | Description | Metrics Measured |
+|-----------|-------------|------------------|
+| BenchmarkMetricsOverhead/disabled | Unary RPC baseline without metric interceptor | Latency, allocations |
+| BenchmarkMetricsOverhead/enabled | Unary RPC with Prometheus metric interceptors (started/handled/in-flight/auth) | Latency, allocations |
+| BenchmarkStreamMetricsOverhead | Streaming RPC with msg sent/received counters | Latency, allocations |
+| BenchmarkAuthMetricsOverhead/mtls | mTLS auth attempt with auth_attempts_total + latency histogram | Latency, allocations |
+| BenchmarkAuthMetricsOverhead/oidc | OIDC auth attempt with auth_attempts_total + latency histogram | Latency, allocations |
+| BenchmarkOTLP/disabled | Unary RPC with OTLP metrics export disabled | Latency, allocations |
+| BenchmarkOTLP/enabled | Unary RPC with OTLP metrics export enabled (gated) | Latency, allocations |
 
 #### Connection Establishment Benchmarks
 
@@ -50,6 +79,8 @@ This document describes the performance and benchmark test cases for the gRPC Te
 | TestPerformance_ConcurrentRequests_Insecure | 10 workers x 100 requests (insecure) | All 1000 requests succeed, 0 errors |
 | TestPerformance_ConcurrentRequests_MTLS | 10 workers x 100 requests (mTLS) | All 1000 requests succeed, 0 errors |
 | TestPerformance_ConcurrentRequests_OIDC | 10 workers x 100 requests (OIDC) | All 1000 requests succeed, 0 errors |
+| TestPerformance_ConcurrentRequests_Both | 10 workers x 100 requests (mTLS+OIDC) | All 1000 requests succeed, 0 errors |
+| TestPerformance_ConcurrentRequests_MetricsConsistency | Concurrent load while scraping `/metrics` | started/handled counters reconcile with request count; in-flight gauge returns to 0 |
 
 #### Connection Pooling Tests
 
@@ -75,6 +106,12 @@ Based on Apple M1 Max (10 cores), these are typical baseline values:
 | TLS | ~65-75 us | ~8.6 KB, ~150 allocs |
 | mTLS | ~65-75 us | ~9.5 KB, ~160 allocs |
 | OIDC | ~65-75 us | ~11 KB, ~173 allocs |
+| Both (mTLS+OIDC) | ~70-85 us | ~12 KB, ~185 allocs |
+
+> NOTE: Baselines above are pre-instrumentation reference values. After the
+> additive metric interceptors and gated OTLP export land, re-capture
+> baselines with `benchstat`. Treat the new numbers as the authoritative
+> baseline and document any shift attributable to instrumentation.
 
 ### Handshake Latency (per connection)
 
@@ -90,6 +127,25 @@ Based on Apple M1 Max (10 cores), these are typical baseline values:
 | Insecure | ~13,000+ req/s |
 | mTLS | ~13,000+ req/s |
 | OIDC | ~13,000+ req/s |
+| Both (mTLS+OIDC) | ~12,000+ req/s |
+
+### Observability Overhead Budget
+
+| Feature | Expected Overhead | Acceptance Threshold |
+|---------|-------------------|----------------------|
+| Prometheus metric interceptors (unary) | low single-digit % latency | <= 5% latency, <= 10% allocs vs no-metrics baseline |
+| Stream msg counters | negligible per message | <= 5% latency on streaming |
+| Auth attempt counter + latency histogram | negligible per attempt | <= 3% added auth-path latency |
+| OTLP metrics export enabled (gated) | background batch export | <= 3% latency vs OTLP-off; no impact on `/metrics` |
+
+**Acceptance criteria (observability overhead):**
+- Enabling Prometheus metric recording stays within the latency/alloc budget
+  above relative to a no-record baseline.
+- Enabling OTLP metrics export does not measurably degrade the Prometheus
+  pull endpoint and stays within the OTLP latency budget.
+- In-flight gauge returns to 0 under sustained concurrent load.
+- All five auth modes (`none`/`tls`/`mtls`/`oidc`/`both`) sustain throughput
+  within the expected ranges with 0 errors.
 
 ### Connection Pooling Impact
 
@@ -119,8 +175,11 @@ go test -tags=performance -bench=MTLS -benchtime=1s -run=^$ ./test/performance/.
 # Run only handshake benchmarks
 go test -tags=performance -bench=Handshake -benchtime=1s -run=^$ ./test/performance/...
 
-# Run auth mode comparison
+# Run auth mode comparison (includes both)
 go test -tags=performance -bench=AuthModes -benchtime=1s -run=^$ ./test/performance/...
+
+# Run observability overhead benchmarks
+go test -tags=performance -bench='MetricsOverhead|AuthMetricsOverhead|OTLP' -benchtime=1s -run=^$ ./test/performance/...
 ```
 
 ### Run Benchmarks with Memory Profiling

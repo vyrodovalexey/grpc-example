@@ -3,8 +3,10 @@
 package functional
 
 import (
+	"context"
 	"crypto/tls"
 	"fmt"
+	"io"
 	"net"
 	"testing"
 
@@ -480,6 +482,173 @@ func TestFunctional_AuthModes_TableDriven(t *testing.T) {
 				require.NoError(t, err)
 				assert.Equal(t, "oidc", resp.GetMessage())
 			}
+		})
+	}
+}
+
+// TestFunctional_AuthModes_CombinedMTLSAndOIDC_MissingCert verifies that in
+// combined (both) mode an OIDC token without a client certificate fails the TLS
+// handshake with Unavailable.
+func TestFunctional_AuthModes_CombinedMTLSAndOIDC_MissingCert(t *testing.T) {
+	t.Parallel()
+
+	env := setupBothAuthServer(t)
+
+	// Connect with an insecure (no-TLS) client: handshake against the mTLS
+	// server fails before any RPC reaches the OIDC interceptor.
+	conn, err := grpc.NewClient(env.address, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	require.NoError(t, err)
+	defer conn.Close()
+
+	client := apiv1.NewTestServiceClient(conn)
+
+	ctx, cancel := newTestContext()
+	defer cancel()
+	ctx = contextWithBearerToken(ctx, "valid")
+
+	_, err = client.Unary(ctx, &apiv1.UnaryRequest{Message: "should fail"})
+	require.Error(t, err)
+
+	st, ok := status.FromError(err)
+	require.True(t, ok)
+	assert.Equal(t, codes.Unavailable, st.Code())
+}
+
+// dialForMode returns a connected client and a per-request context preparer for
+// the given auth mode. The cleanup is registered via t.Cleanup.
+func dialForMode(t *testing.T, mode string) (apiv1.TestServiceClient, func(context.Context) context.Context) {
+	t.Helper()
+
+	switch mode {
+	case config.AuthModeNone:
+		conn, err := grpc.NewClient(getAddress(),
+			grpc.WithTransportCredentials(insecure.NewCredentials()))
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = conn.Close() })
+		return apiv1.NewTestServiceClient(conn), func(ctx context.Context) context.Context { return ctx }
+
+	case config.AuthModeMTLS:
+		env, ca := setupDefaultMTLSEnv(t)
+		clientCert, err := ca.issueClientCert("allmodes-mtls")
+		require.NoError(t, err)
+		conn, client, err := createMTLSClient(env.address, clientCert, ca.pool)
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = conn.Close() })
+		return client, func(ctx context.Context) context.Context { return ctx }
+
+	case config.AuthModeOIDC:
+		token := createIDTokenWithClaims(
+			testIssuer, testSubject, []string{testAudience},
+			fmt.Sprintf(`{"sub":"%s"}`, testSubject),
+		)
+		env := setupDefaultOIDCEnv(t, &mockTokenVerifier{token: token}, testAudience)
+		conn, client, err := createOIDCClient(env.address, "valid")
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = conn.Close() })
+		return client, func(ctx context.Context) context.Context {
+			return contextWithBearerToken(ctx, "valid")
+		}
+
+	case config.AuthModeBoth:
+		env := setupBothAuthServer(t)
+		conn, client := env.dialValid(t)
+		t.Cleanup(func() { _ = conn.Close() })
+		return client, func(ctx context.Context) context.Context {
+			return contextWithBearerToken(ctx, "valid")
+		}
+
+	default:
+		t.Fatalf("unknown auth mode %q", mode)
+		return nil, nil
+	}
+}
+
+// allAuthModes is the set of modes exercised by the AllModes_* tests.
+var allAuthModes = []string{
+	config.AuthModeNone,
+	config.AuthModeMTLS,
+	config.AuthModeOIDC,
+	config.AuthModeBoth,
+}
+
+// TestFunctional_AuthModes_AllModes_Unary verifies the unary happy path under
+// none/mtls/oidc/both.
+func TestFunctional_AuthModes_AllModes_Unary(t *testing.T) {
+	t.Parallel()
+
+	for _, mode := range allAuthModes {
+		t.Run(mode, func(t *testing.T) {
+			t.Parallel()
+
+			client, prep := dialForMode(t, mode)
+
+			ctx, cancel := newTestContext()
+			defer cancel()
+			ctx = prep(ctx)
+
+			resp, err := client.Unary(ctx, &apiv1.UnaryRequest{Message: "unary-" + mode})
+			require.NoError(t, err)
+			assert.Equal(t, "unary-"+mode, resp.GetMessage())
+		})
+	}
+}
+
+// TestFunctional_AuthModes_AllModes_ServerStream verifies the server-stream happy
+// path under none/mtls/oidc/both.
+func TestFunctional_AuthModes_AllModes_ServerStream(t *testing.T) {
+	t.Parallel()
+
+	for _, mode := range allAuthModes {
+		t.Run(mode, func(t *testing.T) {
+			t.Parallel()
+
+			client, prep := dialForMode(t, mode)
+
+			ctx, cancel := newTestContext()
+			defer cancel()
+			ctx = prep(ctx)
+
+			stream, err := client.ServerStream(ctx, &apiv1.StreamRequest{Count: 3, IntervalMs: 10})
+			require.NoError(t, err)
+
+			count := 0
+			for {
+				_, recvErr := stream.Recv()
+				if recvErr == io.EOF {
+					break
+				}
+				require.NoError(t, recvErr)
+				count++
+			}
+			assert.Equal(t, 3, count)
+		})
+	}
+}
+
+// TestFunctional_AuthModes_AllModes_BidiStream verifies the bidi-stream happy path
+// under none/mtls/oidc/both.
+func TestFunctional_AuthModes_AllModes_BidiStream(t *testing.T) {
+	t.Parallel()
+
+	for _, mode := range allAuthModes {
+		t.Run(mode, func(t *testing.T) {
+			t.Parallel()
+
+			client, prep := dialForMode(t, mode)
+
+			ctx, cancel := newTestContext()
+			defer cancel()
+			ctx = prep(ctx)
+
+			stream, err := client.BidirectionalStream(ctx)
+			require.NoError(t, err)
+
+			require.NoError(t, stream.Send(&apiv1.BidirectionalRequest{Value: 21, Operation: "double"}))
+			require.NoError(t, stream.CloseSend())
+
+			resp, err := stream.Recv()
+			require.NoError(t, err)
+			assert.Equal(t, int64(42), resp.GetTransformedValue())
 		})
 	}
 }

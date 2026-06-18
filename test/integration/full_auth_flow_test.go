@@ -6,7 +6,6 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
-	"fmt"
 	"net"
 	"testing"
 	"time"
@@ -135,13 +134,12 @@ func TestIntegration_FullOIDCFlow_WithKeycloak(t *testing.T) {
 	// Create OIDC provider pointing to Keycloak.
 	authCfg := config.AuthConfig{
 		OIDCEnabled:   true,
-		OIDCIssuerURL: fmt.Sprintf("%s/realms/%s", testConfig.KeycloakURL, testConfig.KeycloakRealm),
+		OIDCIssuerURL: testConfig.OIDCIssuerURL,
 		OIDCClientID:  testConfig.ClientID,
 		OIDCAudience:  "",
 	}
 
-	provider, err := authoidc.NewProvider(ctx, authCfg, logger)
-	require.NoError(t, err)
+	provider := newOIDCProvider(t, ctx, testConfig.ClientID, "", logger)
 
 	// Start server with OIDC interceptor.
 	grpcServer := grpc.NewServer(
@@ -188,13 +186,12 @@ func TestIntegration_FullOIDCFlow_InvalidToken(t *testing.T) {
 
 	authCfg := config.AuthConfig{
 		OIDCEnabled:   true,
-		OIDCIssuerURL: fmt.Sprintf("%s/realms/%s", testConfig.KeycloakURL, testConfig.KeycloakRealm),
+		OIDCIssuerURL: testConfig.OIDCIssuerURL,
 		OIDCClientID:  testConfig.ClientID,
 		OIDCAudience:  "",
 	}
 
-	provider, err := authoidc.NewProvider(ctx, authCfg, logger)
-	require.NoError(t, err)
+	provider := newOIDCProvider(t, ctx, testConfig.ClientID, "", logger)
 
 	grpcServer := grpc.NewServer(
 		grpc.ChainUnaryInterceptor(authoidc.UnaryInterceptor(provider, authCfg, logger)),
@@ -276,12 +273,11 @@ func TestIntegration_CombinedAuthFlow(t *testing.T) {
 
 	authCfg := config.AuthConfig{
 		OIDCEnabled:   true,
-		OIDCIssuerURL: fmt.Sprintf("%s/realms/%s", testConfig.KeycloakURL, testConfig.KeycloakRealm),
+		OIDCIssuerURL: testConfig.OIDCIssuerURL,
 		OIDCClientID:  testConfig.ClientID,
 	}
 
-	provider, err := authoidc.NewProvider(ctx, authCfg, logger)
-	require.NoError(t, err)
+	provider := newOIDCProvider(t, ctx, testConfig.ClientID, "", logger)
 
 	// Start server with both mTLS and OIDC.
 	serverTLSConfig := &tls.Config{

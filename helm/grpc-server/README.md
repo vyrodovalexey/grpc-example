@@ -94,9 +94,14 @@ The following table lists the configurable parameters of the gRPC Server chart a
 
 | Parameter | Description | Default |
 |-----------|-------------|---------|
-| `otel.enabled` | Enable OpenTelemetry tracing | `false` |
-| `otel.endpoint` | OTLP exporter endpoint | `""` |
-| `otel.serviceName` | Service name for tracing | `""` |
+| `otel.enabled` | Enable OpenTelemetry OTLP/HTTP export of traces **and** metrics | `false` |
+| `otel.endpoint` | OTLP/HTTP exporter endpoint as `host:port` (no scheme), e.g. `otel-collector:4318` | `""` |
+| `otel.serviceName` | Service name reported on exported traces and metrics (defaults to release fullname) | `""` |
+
+> **Note:** OTLP export is gated on `otel.enabled=true` **and** a non-empty `otel.endpoint`. The
+> Prometheus pull endpoint (`/metrics`) remains the authoritative metrics source; OTLP metrics
+> export is an additive push pipeline (15s interval). The endpoint is `host:port` with no scheme
+> (default OTLP/HTTP port `4318`) and is insecure (plaintext HTTP) by default.
 
 ### Service Configuration
 
@@ -110,10 +115,18 @@ The following table lists the configurable parameters of the gRPC Server chart a
 
 | Parameter | Description | Default |
 |-----------|-------------|---------|
-| `metrics.enabled` | Enable metrics endpoint | `true` |
+| `metrics.enabled` | Enable Prometheus `/metrics` endpoint | `true` |
 | `metrics.serviceMonitor.enabled` | Create ServiceMonitor | `false` |
 | `metrics.serviceMonitor.interval` | Scrape interval | `30s` |
 | `metrics.serviceMonitor.labels` | Additional labels | `{}` |
+
+The server exposes gRPC server metrics (`grpc_server_started_total`, `grpc_server_handled_total`,
+`grpc_server_handling_seconds`, `grpc_server_in_flight_requests`, `grpc_server_msg_received_total`,
+`grpc_server_msg_sent_total`) as well as authentication (`auth_attempts_total`,
+`auth_attempt_duration_seconds`), Vault PKI (`vault_pki_operations_total`,
+`vault_pki_operation_duration_seconds`), and OIDC (`oidc_verification_total`,
+`oidc_provider_requests_total`) metrics. See the main
+[README Observability section](../../README.md#observability) for full label details.
 
 ### Resource Configuration
 
@@ -184,7 +197,7 @@ helm install my-grpc-server ./helm/grpc-server \
 ```bash
 helm install my-grpc-server ./helm/grpc-server \
   --set otel.enabled=true \
-  --set otel.endpoint=http://otel-collector:4317 \
+  --set otel.endpoint=otel-collector:4318 \
   --set otel.serviceName=grpc-server
 ```
 

@@ -13,12 +13,18 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/vyrodovalexey/grpc-example/internal/config"
+	"github.com/vyrodovalexey/grpc-example/internal/metrics"
 	"github.com/vyrodovalexey/grpc-example/internal/retry"
 )
 
 const (
 	// vaultClientTimeout is the timeout for Vault HTTP client operations.
 	vaultClientTimeout = 30 * time.Second
+
+	// vaultOpIssueCertificate is the Vault PKI operation label for certificate issuance.
+	vaultOpIssueCertificate = "issue_certificate"
+	// vaultOpGetCACertificate is the Vault PKI operation label for CA certificate retrieval.
+	vaultOpGetCACertificate = "get_ca_certificate"
 )
 
 // VaultPKIClient defines the interface for Vault PKI operations.
@@ -66,7 +72,15 @@ func NewVaultPKIClient(cfg config.TLSConfig, logger *zap.Logger) (VaultPKIClient
 
 // IssueCertificate issues a new certificate from Vault PKI with exponential backoff retry.
 // Returns the TLS certificate, the CA certificate PEM string, and any error.
-func (v *vaultPKIClient) IssueCertificate(ctx context.Context, commonName string) (tls.Certificate, string, error) {
+func (v *vaultPKIClient) IssueCertificate(
+	ctx context.Context,
+	commonName string,
+) (cert tls.Certificate, caPEM string, err error) {
+	start := time.Now()
+	defer func() {
+		metrics.RecordVaultPKIOperation(vaultOpIssueCertificate, err == nil, time.Since(start))
+	}()
+
 	path := fmt.Sprintf("%s/issue/%s", v.pkiPath, v.pkiRole)
 	data := map[string]any{
 		"common_name": commonName,
@@ -75,7 +89,7 @@ func (v *vaultPKIClient) IssueCertificate(ctx context.Context, commonName string
 
 	var secret *vault.Secret
 
-	err := retry.Do(ctx, retry.DefaultConfig(), v.logger, "vault PKI request", func() error {
+	err = retry.Do(ctx, retry.DefaultConfig(), v.logger, "vault PKI request", func() error {
 		var writeErr error
 		secret, writeErr = v.client.Logical().WriteWithContext(ctx, path, data)
 		return writeErr
@@ -85,19 +99,26 @@ func (v *vaultPKIClient) IssueCertificate(ctx context.Context, commonName string
 	}
 
 	if secret == nil || secret.Data == nil {
-		return tls.Certificate{}, "", fmt.Errorf("vault returned empty response for certificate issuance")
+		err = fmt.Errorf("vault returned empty response for certificate issuance")
+		return tls.Certificate{}, "", err
 	}
 
-	return v.parseCertificateResponse(secret)
+	cert, caPEM, err = v.parseCertificateResponse(secret)
+	return cert, caPEM, err
 }
 
 // GetCACertificate retrieves the CA certificate from Vault PKI with exponential backoff retry.
-func (v *vaultPKIClient) GetCACertificate(ctx context.Context) (*x509.CertPool, error) {
+func (v *vaultPKIClient) GetCACertificate(ctx context.Context) (pool *x509.CertPool, err error) {
+	start := time.Now()
+	defer func() {
+		metrics.RecordVaultPKIOperation(vaultOpGetCACertificate, err == nil, time.Since(start))
+	}()
+
 	path := fmt.Sprintf("%s/cert/ca", v.pkiPath)
 
 	var secret *vault.Secret
 
-	err := retry.Do(ctx, retry.DefaultConfig(), v.logger, "vault CA retrieval", func() error {
+	err = retry.Do(ctx, retry.DefaultConfig(), v.logger, "vault CA retrieval", func() error {
 		var readErr error
 		secret, readErr = v.client.Logical().ReadWithContext(ctx, path)
 		return readErr
@@ -107,17 +128,20 @@ func (v *vaultPKIClient) GetCACertificate(ctx context.Context) (*x509.CertPool, 
 	}
 
 	if secret == nil || secret.Data == nil {
-		return nil, fmt.Errorf("vault returned empty response for CA certificate")
+		err = fmt.Errorf("vault returned empty response for CA certificate")
+		return nil, err
 	}
 
 	caPEM, ok := secret.Data["certificate"].(string)
 	if !ok {
-		return nil, fmt.Errorf("vault CA response missing certificate field")
+		err = fmt.Errorf("vault CA response missing certificate field")
+		return nil, err
 	}
 
-	pool := x509.NewCertPool()
+	pool = x509.NewCertPool()
 	if !pool.AppendCertsFromPEM([]byte(caPEM)) {
-		return nil, fmt.Errorf("parsing CA certificate from vault")
+		err = fmt.Errorf("parsing CA certificate from vault")
+		return nil, err
 	}
 
 	v.logger.Info("retrieved CA certificate from vault")

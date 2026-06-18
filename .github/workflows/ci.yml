@@ -15,8 +15,8 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  GO_VERSION: '1.25.7'
-  GOLANGCI_LINT_VERSION: 'v2.8.0'
+  GO_VERSION: '1.26.4'
+  GOLANGCI_LINT_VERSION: 'v2.12.2'
   HELM_VERSION: 'v3.17.0'
   DOCKER_REGISTRY: ghcr.io
   DOCKER_IMAGE: ghcr.io/${{ github.repository }}
@@ -158,7 +158,7 @@ jobs:
       - name: Set up Helm
         uses: azure/setup-helm@fe7b79cd5ee1e45176fcad797de68ecaf3ca4814 # v4
         with:
-          version: 'v3.14.0'
+          version: ${{ env.HELM_VERSION }}
 
       - name: Create kind cluster
         uses: helm/kind-action@92086f6be054225fa813e0a4b13787fc9088faab # v1.13.0
@@ -310,6 +310,8 @@ jobs:
             -e KC_DB_USERNAME=keycloak \
             -e KC_DB_PASSWORD=password \
             -e KC_HTTP_PORT=8090 \
+            -e "KC_HOSTNAME=http://localhost:8090" \
+            -e KC_HOSTNAME_BACKCHANNEL_DYNAMIC=true \
             -e KC_HOSTNAME_STRICT=false \
             -e KC_HOSTNAME_STRICT_HTTPS=false \
             -e KC_HTTP_ENABLED=true \
@@ -368,6 +370,11 @@ jobs:
           VAULT_ADDR: http://localhost:8200
           VAULT_TOKEN: myroot
           KEYCLOAK_URL: http://localhost:8090
+          # In CI the in-process test server, Keycloak and the host all live on
+          # localhost. Keycloak is started with KC_HOSTNAME=http://localhost:8090
+          # so the issued `iss` claim and discovery `issuer` are both pinned to
+          # http://localhost:8090/realms/grpc-test. Expected issuer must match.
+          OIDC_ISSUER_URL: http://localhost:8090/realms/grpc-test
           KC_REALM: grpc-test
           KC_CLIENT_ID: grpc-server
           KC_CLIENT_SECRET: grpc-server-secret
@@ -543,7 +550,7 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           build-args: |
             VERSION=${{ github.sha }}
-            COMMIT=${{ github.sha }}
+            GIT_COMMIT=${{ github.sha }}
             BUILD_TIME=${{ github.event.head_commit.timestamp }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
@@ -676,7 +683,7 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           build-args: |
             VERSION=${{ steps.meta.outputs.version }}
-            COMMIT=${{ github.sha }}
+            GIT_COMMIT=${{ github.sha }}
             BUILD_TIME=${{ github.event.head_commit.timestamp }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
@@ -764,7 +771,7 @@ jobs:
       - name: Set up Helm
         uses: azure/setup-helm@fe7b79cd5ee1e45176fcad797de68ecaf3ca4814 # v4
         with:
-          version: 'v3.14.0'
+          version: ${{ env.HELM_VERSION }}
 
       - name: Create kind cluster
         uses: helm/kind-action@92086f6be054225fa813e0a4b13787fc9088faab # v1.13.0

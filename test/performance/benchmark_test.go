@@ -5,10 +5,16 @@ package performance
 import (
 	"context"
 	"crypto/tls"
+	"io"
 	"net"
 	"testing"
 	"time"
 
+	"go.uber.org/zap"
+	"google.golang.org/grpc"
+
+	"github.com/vyrodovalexey/grpc-example/internal/metrics"
+	"github.com/vyrodovalexey/grpc-example/internal/telemetry"
 	apiv1 "github.com/vyrodovalexey/grpc-example/pkg/api/v1"
 )
 
@@ -110,6 +116,42 @@ func BenchmarkOIDC_UnaryRPC(b *testing.B) {
 	defer cleanup()
 
 	conn, client := insecureClient(b, address)
+	defer conn.Close()
+
+	ctx := contextWithBearerToken(context.Background(), "bench-token")
+	req := &apiv1.UnaryRequest{Message: "benchmark"}
+
+	// Warm up.
+	for range 10 {
+		_, _ = client.Unary(ctx, req)
+	}
+
+	b.ResetTimer()
+	b.ReportAllocs()
+
+	for b.Loop() {
+		_, err := client.Unary(ctx, req)
+		if err != nil {
+			b.Fatalf("unary call failed: %v", err)
+		}
+	}
+}
+
+func BenchmarkBoth_UnaryRPC(b *testing.B) {
+	ca, err := newBenchCA()
+	if err != nil {
+		b.Fatalf("create CA: %v", err)
+	}
+
+	address, cleanup := bothServer(b, ca)
+	defer cleanup()
+
+	clientCert, err := ca.issueCert("bench-client", nil, nil)
+	if err != nil {
+		b.Fatalf("issue client cert: %v", err)
+	}
+
+	conn, client := mtlsClient(b, address, clientCert, ca.pool)
 	defer conn.Close()
 
 	ctx := contextWithBearerToken(context.Background(), "bench-token")
@@ -369,6 +411,183 @@ func BenchmarkAuthModes_Comparison(b *testing.B) {
 		for b.Loop() {
 			_, _ = client.Unary(ctx, req)
 		}
+	})
+
+	b.Run("both", func(b *testing.B) {
+		address, cleanup := bothServer(b, ca)
+		defer cleanup()
+
+		conn, client := mtlsClient(b, address, clientCert, ca.pool)
+		defer conn.Close()
+
+		ctx := contextWithBearerToken(context.Background(), "bench-token")
+		req := &apiv1.UnaryRequest{Message: "benchmark"}
+
+		b.ResetTimer()
+		for b.Loop() {
+			_, _ = client.Unary(ctx, req)
+		}
+	})
+}
+
+// ---------------------------------------------------------------------------
+// Observability overhead benchmarks
+//
+// These quantify the cost of the additive Prometheus metric interceptors,
+// stream message counters, auth-attempt instrumentation, and gated OTLP export
+// so regressions in the hot path can be detected and budgeted.
+// ---------------------------------------------------------------------------
+
+// metricsUnaryServer creates an insecure gRPC server with an optional unary
+// metrics interceptor installed.
+func metricsUnaryServer(b *testing.B, withMetrics bool) (string, func()) {
+	b.Helper()
+
+	var opts []grpc.ServerOption
+	if withMetrics {
+		opts = append(opts, grpc.ChainUnaryInterceptor(metrics.UnaryServerInterceptor()))
+	}
+	srv := grpc.NewServer(opts...)
+	apiv1.RegisterTestServiceServer(srv, &benchTestService{})
+
+	lis, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		b.Fatalf("listen: %v", err)
+	}
+	go func() { _ = srv.Serve(lis) }()
+	return lis.Addr().String(), srv.Stop
+}
+
+// BenchmarkMetricsOverhead compares unary RPC latency/allocs with and without
+// the Prometheus metric interceptor.
+func BenchmarkMetricsOverhead(b *testing.B) {
+	run := func(b *testing.B, withMetrics bool) {
+		address, cleanup := metricsUnaryServer(b, withMetrics)
+		defer cleanup()
+
+		conn, client := insecureClient(b, address)
+		defer conn.Close()
+
+		ctx := context.Background()
+		req := &apiv1.UnaryRequest{Message: "benchmark"}
+		for range 10 {
+			_, _ = client.Unary(ctx, req)
+		}
+
+		b.ResetTimer()
+		b.ReportAllocs()
+		for b.Loop() {
+			if _, err := client.Unary(ctx, req); err != nil {
+				b.Fatalf("unary call failed: %v", err)
+			}
+		}
+	}
+
+	b.Run("disabled", func(b *testing.B) { run(b, false) })
+	b.Run("enabled", func(b *testing.B) { run(b, true) })
+}
+
+// BenchmarkStreamMetricsOverhead measures server-streaming RPC throughput with
+// the stream metrics interceptor (msg sent/received counters) installed.
+func BenchmarkStreamMetricsOverhead(b *testing.B) {
+	run := func(b *testing.B, withMetrics bool) {
+		address, cleanup := streamServer(b, withMetrics)
+		defer cleanup()
+
+		conn, client := insecureClient(b, address)
+		defer conn.Close()
+
+		req := &apiv1.StreamRequest{Count: 10}
+		drain := func() {
+			stream, err := client.ServerStream(context.Background(), req)
+			if err != nil {
+				b.Fatalf("server stream: %v", err)
+			}
+			for {
+				_, recvErr := stream.Recv()
+				if recvErr == io.EOF {
+					return
+				}
+				if recvErr != nil {
+					b.Fatalf("recv: %v", recvErr)
+				}
+			}
+		}
+
+		drain() // warm up
+		b.ResetTimer()
+		b.ReportAllocs()
+		for b.Loop() {
+			drain()
+		}
+	}
+
+	b.Run("disabled", func(b *testing.B) { run(b, false) })
+	b.Run("enabled", func(b *testing.B) { run(b, true) })
+}
+
+// BenchmarkAuthMetricsOverhead measures the cost of recording an auth attempt
+// (auth_attempts_total counter + auth_attempt_duration_seconds histogram).
+func BenchmarkAuthMetricsOverhead(b *testing.B) {
+	b.Run("mtls", func(b *testing.B) {
+		b.ReportAllocs()
+		for b.Loop() {
+			metrics.RecordAuthAttempt(metrics.AuthTypeMTLS, true, 250*time.Microsecond)
+		}
+	})
+	b.Run("oidc", func(b *testing.B) {
+		b.ReportAllocs()
+		for b.Loop() {
+			metrics.RecordAuthAttempt(metrics.AuthTypeOIDC, true, 250*time.Microsecond)
+		}
+	})
+}
+
+// BenchmarkOTLP measures unary RPC latency with the OTLP metrics export pipeline
+// disabled vs. enabled (gated). The Prometheus metric interceptor is always
+// installed so the difference isolates the OTLP push pipeline overhead.
+func BenchmarkOTLP(b *testing.B) {
+	logger := zap.NewNop()
+
+	run := func(b *testing.B) {
+		address, cleanup := metricsUnaryServer(b, true)
+		defer cleanup()
+
+		conn, client := insecureClient(b, address)
+		defer conn.Close()
+
+		ctx := context.Background()
+		req := &apiv1.UnaryRequest{Message: "benchmark"}
+		for range 10 {
+			_, _ = client.Unary(ctx, req)
+		}
+
+		b.ResetTimer()
+		b.ReportAllocs()
+		for b.Loop() {
+			if _, err := client.Unary(ctx, req); err != nil {
+				b.Fatalf("unary call failed: %v", err)
+			}
+		}
+	}
+
+	b.Run("disabled", func(b *testing.B) {
+		telemetry.ShutdownMeterProvider(logger)
+		run(b)
+	})
+
+	b.Run("enabled", func(b *testing.B) {
+		// The OTLP HTTP exporter dials lazily and exports on a background
+		// interval, so init never blocks even if no collector is listening.
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		err := telemetry.InitMeterProvider(ctx,
+			telemetry.Config{Enabled: true, Endpoint: "localhost:4318", ServiceName: "perf-otlp"}, logger)
+		cancel()
+		if err != nil {
+			b.Fatalf("init meter provider: %v", err)
+		}
+		b.Cleanup(func() { telemetry.ShutdownMeterProvider(logger) })
+		run(b)
 	})
 }
 

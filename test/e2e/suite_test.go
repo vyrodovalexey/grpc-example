@@ -49,6 +49,10 @@ type e2eConfig struct {
 	ClientID      string
 	ClientSecret  string
 	CertDir       string
+	// AuthMode mirrors the server's AUTH_MODE (none|mtls|oidc|both). When the
+	// server enforces OIDC ("oidc" or "both"), mTLS test requests must also
+	// carry a valid bearer token to satisfy the combined authentication chain.
+	AuthMode string
 }
 
 var testConfig *e2eConfig
@@ -72,7 +76,31 @@ func loadE2EConfig() *e2eConfig {
 		ClientID:      getEnvOrDefault("KC_CLIENT_ID", "grpc-server"),
 		ClientSecret:  getEnvOrDefault("KC_CLIENT_SECRET", "grpc-server-secret"),
 		CertDir:       getEnvOrDefault("CERT_DIR", "/tmp/grpc-test-certs"),
+		AuthMode:      getEnvOrDefault("AUTH_MODE", "mtls"),
 	}
+}
+
+// oidcEnforced reports whether the server requires an OIDC bearer token in
+// addition to (or instead of) mTLS, based on the configured AUTH_MODE.
+func oidcEnforced() bool {
+	switch testConfig.AuthMode {
+	case "oidc", "both":
+		return true
+	default:
+		return false
+	}
+}
+
+// maybeAuthContext returns a context carrying a freshly acquired Keycloak
+// bearer token when the server enforces OIDC; otherwise it returns ctx
+// unchanged. This lets mTLS-focused tests run against any AUTH_MODE.
+func maybeAuthContext(t *testing.T, ctx context.Context) context.Context {
+	t.Helper()
+
+	if !oidcEnforced() {
+		return ctx
+	}
+	return contextWithToken(ctx, acquireKeycloakToken(t))
 }
 
 // getEnvOrDefault returns the environment variable value or a default.

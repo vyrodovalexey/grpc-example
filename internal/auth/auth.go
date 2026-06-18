@@ -28,7 +28,7 @@ func (i *Identity) String() string {
 	}
 
 	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("Identity{Subject: %s, Issuer: %s, AuthMethod: %s", i.Subject, i.Issuer, i.AuthMethod))
+	fmt.Fprintf(&sb, "Identity{Subject: %s, Issuer: %s, AuthMethod: %s", i.Subject, i.Issuer, i.AuthMethod)
 
 	if len(i.Claims) > 0 {
 		sb.WriteString(", Claims: {")
@@ -37,7 +37,7 @@ func (i *Identity) String() string {
 			if !first {
 				sb.WriteString(", ")
 			}
-			sb.WriteString(fmt.Sprintf("%s: %s", k, v))
+			fmt.Fprintf(&sb, "%s: %s", k, v)
 			first = false
 		}
 		sb.WriteString("}")

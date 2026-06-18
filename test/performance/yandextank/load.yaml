@@ -1,0 +1,80 @@
+# Yandex Tank configuration for gRPC load testing of the grpc-example server.
+#
+# This config uses the Pandora engine (Yandex Tank's native Go load generator),
+# which supports gRPC. It is OPTIONAL / ADDITIVE — the Go-based load tests in
+# test/performance/load_test.go already satisfy the spec and run against the
+# same server. Use this when you want an external, RPS-scheduled load profile
+# with Yandex Tank's reporting/autostop machinery.
+#
+# IMPORTANT: the server enforces mTLS + OIDC (AUTH_MODE=both). The stock Pandora
+# gRPC gun presents a bearer token via metadata but does NOT load a client TLS
+# certificate, so it cannot complete the mTLS handshake on its own. To drive the
+# enforced "both" endpoint you must either:
+#   1. Use a custom Pandora gun built with mTLS client-cert support, OR
+#   2. Point this config at a server started with AUTH_MODE=oidc (TLS + token),
+#      OR AUTH_MODE=none for a pure throughput baseline.
+#
+# For the enforced mTLS+OIDC endpoint, prefer the Go load tests:
+#   CERT_DIR=/tmp/grpc-test-certs GRPC_ADDRESS=localhost:50051 \
+#   KEYCLOAK_URL=http://localhost:8090 KC_REALM=grpc-test \
+#   KC_CLIENT_ID=grpc-server KC_CLIENT_SECRET=grpc-server-secret AUTH_MODE=both \
+#   go test -v -tags=performance -run TestPerformance_LiveServer ./test/performance/...
+#
+# Run with (writes artifacts to .yandextank/):
+#   yandex-tank -c test/performance/yandextank/load.yaml
+
+pandora:
+  enabled: true
+  pandora_cmd: pandora            # path to the pandora binary
+  config_content:
+    pools:
+      - id: grpc-unary
+        gun:
+          type: grpc
+          target: localhost:50051
+          tls: true               # server-side TLS; see note above re: mTLS
+        ammo:
+          type: grpc/json
+          file: test/performance/yandextank/ammo.json
+        result:
+          type: phout
+          destination: ./phout.txt
+        startup:
+          # Open a fixed pool of connections once, then schedule requests by RPS.
+          type: once
+          times: 50
+        rps:
+          # Warm up to 1000 RPS over 60s, hold for 120s, then ramp to 3000 RPS.
+          - duration: 60s
+            type: line
+            from: 100
+            to: 1000
+          - duration: 120s
+            type: const
+            ops: 1000
+          - duration: 60s
+            type: line
+            from: 1000
+            to: 3000
+    log:
+      level: error
+
+# Autostop: protect the target and abort the test early on SLO violations.
+autostop:
+  enabled: true
+  package: yandextank.plugins.Autostop
+  autostop:
+    # Abort if >5% of responses are non-OK over a 10s window.
+    - http(5xx,5%,10s)
+    # Abort if the 99th percentile latency exceeds 500ms for 15s.
+    - quantile(99,500,15s)
+    # Abort if average response time exceeds 250ms for 20s.
+    - time(250ms,20s)
+
+# Console + telegraf monitoring of the target (optional; requires telegraf).
+telegraf:
+  enabled: false
+  # config: test/performance/yandextank/telegraf.conf
+
+console:
+  enabled: true

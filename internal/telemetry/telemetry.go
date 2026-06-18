@@ -18,7 +18,31 @@ import (
 const (
 	// tracerShutdownTimeout is the timeout for shutting down the tracer provider.
 	tracerShutdownTimeout = 5 * time.Second
+	// defaultServiceName is used when no service name is configured.
+	defaultServiceName = "grpc-example-server"
 )
+
+// resolveServiceName returns the configured service name or the default fallback.
+func resolveServiceName(name string) string {
+	if name == "" {
+		return defaultServiceName
+	}
+	return name
+}
+
+// buildResource constructs an OpenTelemetry resource describing this service.
+// It is shared by the tracer and meter providers to avoid duplication.
+func buildResource(ctx context.Context, serviceName string) (*resource.Resource, error) {
+	res, err := resource.New(ctx,
+		resource.WithAttributes(
+			semconv.ServiceNameKey.String(serviceName),
+		),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("creating OTLP resource: %w", err)
+	}
+	return res, nil
+}
 
 // Config holds the configuration for OpenTelemetry tracing.
 type Config struct {
@@ -49,18 +73,11 @@ func InitTracer(ctx context.Context, cfg Config, logger *zap.Logger) error {
 		return fmt.Errorf("creating OTLP trace exporter: %w", err)
 	}
 
-	serviceName := cfg.ServiceName
-	if serviceName == "" {
-		serviceName = "grpc-example-server"
-	}
+	serviceName := resolveServiceName(cfg.ServiceName)
 
-	res, err := resource.New(ctx,
-		resource.WithAttributes(
-			semconv.ServiceNameKey.String(serviceName),
-		),
-	)
+	res, err := buildResource(ctx, serviceName)
 	if err != nil {
-		return fmt.Errorf("creating OTLP resource: %w", err)
+		return err
 	}
 
 	tp := sdktrace.NewTracerProvider(

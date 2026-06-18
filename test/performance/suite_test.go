@@ -11,12 +11,18 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/json"
 	"encoding/pem"
 	"fmt"
+	"io"
 	"math/big"
 	"net"
+	"net/http"
+	"net/url"
 	"os"
+	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 	"unsafe"
@@ -31,12 +37,247 @@ import (
 	"github.com/vyrodovalexey/grpc-example/internal/auth/mtls"
 	authoidc "github.com/vyrodovalexey/grpc-example/internal/auth/oidc"
 	"github.com/vyrodovalexey/grpc-example/internal/config"
+	"github.com/vyrodovalexey/grpc-example/internal/metrics"
 	apiv1 "github.com/vyrodovalexey/grpc-example/pkg/api/v1"
 )
 
+// perfConfig holds connection/auth configuration for live-server performance
+// tests. It mirrors the e2e suite conventions so the same environment variables
+// drive both suites.
+type perfConfig struct {
+	GRPCAddress   string
+	CertDir       string
+	KeycloakURL   string
+	KeycloakRealm string
+	ClientID      string
+	ClientSecret  string
+	// AuthMode mirrors the server's AUTH_MODE (none|tls|mtls|oidc|both). When the
+	// server enforces OIDC ("oidc"/"both") live clients must also present a valid
+	// bearer token; when it enforces mTLS ("mtls"/"both") they must present a
+	// client certificate from CertDir.
+	AuthMode string
+}
+
+// liveCfg is the resolved live-server configuration, populated in TestMain.
+var liveCfg *perfConfig
+
 // TestMain is the entry point for performance tests.
 func TestMain(m *testing.M) {
+	liveCfg = loadPerfConfig()
 	os.Exit(m.Run())
+}
+
+// loadPerfConfig loads live-server configuration from environment variables,
+// falling back to the docker-compose defaults used by the e2e suite.
+func loadPerfConfig() *perfConfig {
+	return &perfConfig{
+		GRPCAddress:   getEnvOrDefault("GRPC_ADDRESS", "127.0.0.1:50051"),
+		CertDir:       getEnvOrDefault("CERT_DIR", "/tmp/grpc-test-certs"),
+		KeycloakURL:   getEnvOrDefault("KEYCLOAK_URL", "http://127.0.0.1:8090"),
+		KeycloakRealm: getEnvOrDefault("KC_REALM", "grpc-test"),
+		ClientID:      getEnvOrDefault("KC_CLIENT_ID", "grpc-server"),
+		ClientSecret:  getEnvOrDefault("KC_CLIENT_SECRET", "grpc-server-secret"),
+		AuthMode:      getEnvOrDefault("AUTH_MODE", "both"),
+	}
+}
+
+// getEnvOrDefault returns the environment variable value or a default.
+func getEnvOrDefault(key, defaultValue string) string {
+	if val := os.Getenv(key); val != "" {
+		return val
+	}
+	return defaultValue
+}
+
+// mtlsEnforced reports whether the server requires a client certificate.
+func mtlsEnforced() bool {
+	switch liveCfg.AuthMode {
+	case "mtls", "both":
+		return true
+	default:
+		return false
+	}
+}
+
+// oidcEnforced reports whether the server requires an OIDC bearer token.
+func oidcEnforced() bool {
+	switch liveCfg.AuthMode {
+	case "oidc", "both":
+		return true
+	default:
+		return false
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Live-server prerequisite checks (graceful skip)
+// ---------------------------------------------------------------------------
+
+// skipIfCertsUnavailable skips when the configured client certificate material
+// is not present on disk (required for mtls/both modes).
+func skipIfCertsUnavailable(t *testing.T) {
+	t.Helper()
+	if !mtlsEnforced() {
+		return
+	}
+	for _, name := range []string{"ca-cert.pem", "client-cert.pem", "client-key.pem"} {
+		p := filepath.Join(liveCfg.CertDir, name)
+		if _, err := os.Stat(p); err != nil {
+			t.Skipf("skipping: required cert %q not available: %v", p, err)
+		}
+	}
+}
+
+// skipIfKeycloakUnavailable skips when Keycloak's OIDC discovery endpoint is not
+// reachable (required for oidc/both modes).
+func skipIfKeycloakUnavailable(t *testing.T) {
+	t.Helper()
+	if !oidcEnforced() {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	discoveryURL := fmt.Sprintf("%s/realms/%s/.well-known/openid-configuration",
+		liveCfg.KeycloakURL, liveCfg.KeycloakRealm)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, discoveryURL, http.NoBody)
+	if err != nil {
+		t.Skipf("skipping: cannot create Keycloak discovery request: %v", err)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Skipf("skipping: Keycloak not available at %s: %v", liveCfg.KeycloakURL, err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Skipf("skipping: Keycloak discovery returned %d", resp.StatusCode)
+	}
+}
+
+// skipIfLiveServerUnavailable skips when the live gRPC server cannot be reached
+// over TCP within a short dial timeout.
+func skipIfLiveServerUnavailable(t *testing.T) {
+	t.Helper()
+	conn, err := net.DialTimeout("tcp", liveCfg.GRPCAddress, 3*time.Second)
+	if err != nil {
+		t.Skipf("skipping: gRPC server not reachable at %s: %v", liveCfg.GRPCAddress, err)
+	}
+	_ = conn.Close()
+}
+
+// skipUnlessLivePrereqs performs all prerequisite checks for live-server tests
+// given the configured AUTH_MODE.
+func skipUnlessLivePrereqs(t *testing.T) {
+	t.Helper()
+	skipIfLiveServerUnavailable(t)
+	skipIfCertsUnavailable(t)
+	skipIfKeycloakUnavailable(t)
+}
+
+// ---------------------------------------------------------------------------
+// Live-server token + client helpers
+// ---------------------------------------------------------------------------
+
+// acquireKeycloakToken obtains an access token from Keycloak via the
+// client_credentials grant, matching the e2e suite behaviour.
+func acquireKeycloakToken(t testing.TB) (string, error) {
+	t.Helper()
+
+	tokenURL := fmt.Sprintf(
+		"%s/realms/%s/protocol/openid-connect/token",
+		liveCfg.KeycloakURL, liveCfg.KeycloakRealm,
+	)
+	data := url.Values{
+		"grant_type":    {"client_credentials"},
+		"client_id":     {liveCfg.ClientID},
+		"client_secret": {liveCfg.ClientSecret},
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, tokenURL, strings.NewReader(data.Encode()))
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", err
+	}
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("token request failed (%d): %s", resp.StatusCode, string(body))
+	}
+
+	var tokenResp struct {
+		AccessToken string `json:"access_token"`
+	}
+	if err := json.Unmarshal(body, &tokenResp); err != nil {
+		return "", err
+	}
+	return tokenResp.AccessToken, nil
+}
+
+// liveClient dials the live gRPC server using the credentials appropriate for
+// the configured AUTH_MODE (mTLS client cert for mtls/both, insecure otherwise).
+func liveClient(t testing.TB) (*grpc.ClientConn, apiv1.TestServiceClient, error) {
+	t.Helper()
+
+	if mtlsEnforced() {
+		certFile := filepath.Join(liveCfg.CertDir, "client-cert.pem")
+		keyFile := filepath.Join(liveCfg.CertDir, "client-key.pem")
+		caFile := filepath.Join(liveCfg.CertDir, "ca-cert.pem")
+
+		cert, err := tls.LoadX509KeyPair(certFile, keyFile)
+		if err != nil {
+			return nil, nil, fmt.Errorf("load client keypair: %w", err)
+		}
+		caPEM, err := os.ReadFile(caFile) //nolint:gosec // test cert path from env
+		if err != nil {
+			return nil, nil, fmt.Errorf("read CA: %w", err)
+		}
+		caPool := x509.NewCertPool()
+		if !caPool.AppendCertsFromPEM(caPEM) {
+			return nil, nil, fmt.Errorf("append CA cert failed")
+		}
+		tlsConfig := &tls.Config{
+			Certificates: []tls.Certificate{cert},
+			RootCAs:      caPool,
+			MinVersion:   tls.VersionTLS12,
+		}
+		conn, err := grpc.NewClient(liveCfg.GRPCAddress, grpc.WithTransportCredentials(credentials.NewTLS(tlsConfig)))
+		if err != nil {
+			return nil, nil, err
+		}
+		return conn, apiv1.NewTestServiceClient(conn), nil
+	}
+
+	conn, err := grpc.NewClient(liveCfg.GRPCAddress, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		return nil, nil, err
+	}
+	return conn, apiv1.NewTestServiceClient(conn), nil
+}
+
+// liveAuthContext returns a context carrying a freshly acquired bearer token
+// when the server enforces OIDC; otherwise it returns ctx unchanged.
+func liveAuthContext(t testing.TB, ctx context.Context) (context.Context, error) {
+	t.Helper()
+	if !oidcEnforced() {
+		return ctx, nil
+	}
+	token, err := acquireKeycloakToken(t)
+	if err != nil {
+		return ctx, err
+	}
+	return contextWithBearerToken(ctx, token), nil
 }
 
 // ---------------------------------------------------------------------------
@@ -288,6 +529,100 @@ func oidcServer(b *testing.B) (string, func()) {
 
 	go func() { _ = srv.Serve(lis) }()
 
+	return lis.Addr().String(), srv.Stop
+}
+
+// bothServer creates a gRPC server enforcing BOTH mTLS (client cert) AND OIDC
+// (bearer token), modelling the live server's AUTH_MODE=both.
+func bothServer(b *testing.B, ca *benchCA) (string, func()) {
+	b.Helper()
+
+	serverCert, err := ca.issueCert("bench-server", []string{"localhost"}, []net.IP{net.ParseIP("127.0.0.1")})
+	if err != nil {
+		b.Fatalf("issue server cert: %v", err)
+	}
+
+	tlsConfig := &tls.Config{
+		Certificates: []tls.Certificate{serverCert},
+		ClientCAs:    ca.pool,
+		ClientAuth:   tls.RequireAndVerifyClientCert,
+		MinVersion:   tls.VersionTLS12,
+	}
+
+	token := &gooidc.IDToken{
+		Issuer:   "https://bench-issuer.example.com",
+		Subject:  "bench-user",
+		Audience: []string{"bench-client"},
+	}
+	setIDTokenClaims(token, []byte(`{"sub":"bench-user"}`))
+	provider := &benchProvider{verifier: &benchTokenVerifier{token: token}}
+
+	authCfg := config.AuthConfig{
+		OIDCEnabled:  true,
+		OIDCClientID: "bench-client",
+	}
+	logger := zap.NewNop()
+
+	srv := grpc.NewServer(
+		grpc.Creds(credentials.NewTLS(tlsConfig)),
+		grpc.ChainUnaryInterceptor(
+			mtls.UnaryInterceptor(mtls.Config{}, logger),
+			authoidc.UnaryInterceptor(provider, authCfg, logger),
+		),
+	)
+	apiv1.RegisterTestServiceServer(srv, &benchTestService{})
+
+	lis, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		b.Fatalf("listen: %v", err)
+	}
+
+	go func() { _ = srv.Serve(lis) }()
+
+	return lis.Addr().String(), srv.Stop
+}
+
+// ---------------------------------------------------------------------------
+// Streaming service for stream-metrics benchmarks
+// ---------------------------------------------------------------------------
+
+// benchStreamService streams `Count` responses with no delay so streaming
+// throughput/metrics overhead can be measured deterministically.
+type benchStreamService struct {
+	apiv1.UnimplementedTestServiceServer
+}
+
+func (s *benchStreamService) Unary(_ context.Context, req *apiv1.UnaryRequest) (*apiv1.UnaryResponse, error) {
+	return &apiv1.UnaryResponse{Message: req.GetMessage(), Timestamp: time.Now().UnixNano()}, nil
+}
+
+func (s *benchStreamService) ServerStream(req *apiv1.StreamRequest, stream apiv1.TestService_ServerStreamServer) error {
+	count := req.GetCount()
+	for i := int32(0); i < count; i++ {
+		if err := stream.Send(&apiv1.StreamResponse{Sequence: i + 1, Timestamp: time.Now().UnixNano()}); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// streamServer creates an insecure gRPC server with the streaming service and an
+// optional metrics stream interceptor.
+func streamServer(b *testing.B, withMetrics bool) (string, func()) {
+	b.Helper()
+
+	var opts []grpc.ServerOption
+	if withMetrics {
+		opts = append(opts, grpc.ChainStreamInterceptor(metrics.StreamServerInterceptor()))
+	}
+	srv := grpc.NewServer(opts...)
+	apiv1.RegisterTestServiceServer(srv, &benchStreamService{})
+
+	lis, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		b.Fatalf("listen: %v", err)
+	}
+	go func() { _ = srv.Serve(lis) }()
 	return lis.Addr().String(), srv.Stop
 }
 

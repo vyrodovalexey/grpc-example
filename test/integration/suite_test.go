@@ -12,8 +12,12 @@ import (
 	"testing"
 	"time"
 
+	gooidc "github.com/coreos/go-oidc/v3/oidc"
 	vault "github.com/hashicorp/vault/api"
 	"go.uber.org/zap"
+
+	authoidc "github.com/vyrodovalexey/grpc-example/internal/auth/oidc"
+	"github.com/vyrodovalexey/grpc-example/internal/config"
 )
 
 const (
@@ -31,6 +35,7 @@ const (
 	envVaultPKIPath  = "VAULT_PKI_PATH"
 	envVaultPKIRole  = "VAULT_PKI_ROLE"
 	envKeycloakURL   = "KEYCLOAK_URL"
+	envOIDCIssuerURL = "OIDC_ISSUER_URL"
 	envKeycloakRealm = "KC_REALM"
 	envKeycloakAdmin = "KC_ADMIN_USER"
 	envKeycloakPass  = "KC_ADMIN_PASSWORD"
@@ -40,11 +45,18 @@ const (
 
 // integrationConfig holds configuration for integration tests.
 type integrationConfig struct {
-	VaultAddr     string
-	VaultToken    string
-	VaultPKIPath  string
-	VaultPKIRole  string
-	KeycloakURL   string
+	VaultAddr    string
+	VaultToken   string
+	VaultPKIPath string
+	VaultPKIRole string
+	KeycloakURL  string
+	// OIDCIssuerURL is the EXPECTED issuer (`iss` claim) value that Keycloak
+	// stamps into tokens and reports in its discovery document. Keycloak is
+	// configured (KC_HOSTNAME) with a FIXED frontend hostname so this value is
+	// identical whether reached from inside docker (`keycloak:8090`) or from
+	// the host. Discovery/JWKS are still fetched from KeycloakURL (localhost)
+	// via the back-channel; only issuer validation uses this fixed value.
+	OIDCIssuerURL string
 	KeycloakRealm string
 	KeycloakAdmin string
 	KeycloakPass  string
@@ -68,6 +80,7 @@ func loadIntegrationConfig() *integrationConfig {
 		VaultPKIPath:  getEnvOrDefault(envVaultPKIPath, "pki"),
 		VaultPKIRole:  getEnvOrDefault(envVaultPKIRole, "grpc-server"),
 		KeycloakURL:   getEnvOrDefault(envKeycloakURL, "http://127.0.0.1:8090"),
+		OIDCIssuerURL: getEnvOrDefault(envOIDCIssuerURL, "http://keycloak:8090/realms/grpc-test"),
 		KeycloakRealm: getEnvOrDefault(envKeycloakRealm, "grpc-test"),
 		KeycloakAdmin: getEnvOrDefault(envKeycloakAdmin, "admin"),
 		KeycloakPass:  getEnvOrDefault(envKeycloakPass, "admin"),
@@ -140,6 +153,41 @@ func skipIfKeycloakUnavailable(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Skipf("skipping: Keycloak discovery endpoint returned %d", resp.StatusCode)
 	}
+}
+
+// newOIDCProvider builds an OIDC provider for host-based integration tests.
+//
+// The server runs inside docker and validates tokens against the FIXED issuer
+// (testConfig.OIDCIssuerURL, e.g. http://keycloak:8090/realms/grpc-test). On the
+// host that hostname is not resolvable, so discovery and JWKS are fetched from
+// the host-reachable KeycloakURL (localhost) while issuer validation still
+// enforces the fixed issuer value via InsecureIssuerURLContext.
+//
+// Issuer validation is NOT disabled: go-oidc continues to require that verified
+// tokens carry iss == testConfig.OIDCIssuerURL. This mirrors exactly what the
+// docker server enforces, only adapting the discovery transport for the host.
+func newOIDCProvider(t *testing.T, ctx context.Context, clientID, audience string, logger *zap.Logger) authoidc.Provider {
+	t.Helper()
+
+	discoveryURL := fmt.Sprintf("%s/realms/%s", testConfig.KeycloakURL, testConfig.KeycloakRealm)
+
+	authCfg := config.AuthConfig{
+		OIDCEnabled:   true,
+		OIDCIssuerURL: discoveryURL,
+		OIDCClientID:  clientID,
+		OIDCAudience:  audience,
+	}
+
+	// Discover at discoveryURL (host-reachable) but pin the expected issuer to
+	// the fixed value that tokens actually carry.
+	discoveryCtx := gooidc.InsecureIssuerURLContext(ctx, testConfig.OIDCIssuerURL)
+
+	provider, err := authoidc.NewProvider(discoveryCtx, authCfg, logger)
+	if err != nil {
+		t.Fatalf("failed to create OIDC provider (discovery=%s, issuer=%s): %v",
+			discoveryURL, testConfig.OIDCIssuerURL, err)
+	}
+	return provider
 }
 
 // createVaultClient creates a Vault API client for testing.

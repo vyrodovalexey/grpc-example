@@ -1,0 +1,1 @@
+{"tag": "Unary", "call": "api.v1.TestService/Unary", "metadata": {"authorization": "Bearer REPLACE_WITH_TOKEN"}, "payload": {"message": "yandex-tank-load"}}
